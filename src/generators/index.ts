@@ -40,6 +40,9 @@ export function buildSkillContent(ctx: GeneratorContext): string {
     '',
     ctx.description || 'MCP server installed via mcpx.',
     '',
+    `> **Important:** These are NOT native MCP tools. Do NOT call them as \`mcp__${ctx.serverName}__*\` tools.`,
+    `> All tools must be invoked via Bash using \`mcpx call ${ctx.serverName} <tool_name> '<json_params>'\`.`,
+    '',
     '## Tools',
     '',
   ];
