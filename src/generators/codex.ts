@@ -27,10 +27,13 @@ export function generate(ctx: GeneratorContext): GeneratedSkill {
 
   lines.push(`<!-- mcpx:end:${ctx.serverName} -->`);
 
-  const filePath = join(homedir(), '.codex', 'AGENTS.md');
+  const filePath = ctx.scope === 'global'
+    ? join(homedir(), '.codex', 'AGENTS.md')
+    : join(process.cwd(), 'AGENTS.md');
 
   return {
     agent: 'codex',
+    scope: ctx.scope,
     filePath,
     content: lines.join('\n'),
     isAppend: true,

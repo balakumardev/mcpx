@@ -46,6 +46,7 @@ export async function getGenerator(agent: AgentType): Promise<(ctx: GeneratorCon
     case 'cursor': return (await import('./cursor.js')).generate;
     case 'codex': return (await import('./codex.js')).generate;
     case 'windsurf': return (await import('./windsurf.js')).generate;
+    case 'augment': return (await import('./augment.js')).generate;
   }
 }
 
@@ -58,6 +59,7 @@ export function detectAgents(): AgentType[] {
   if (existsSync(join(process.cwd(), '.cursor')) || existsSync(join(home, '.cursor'))) agents.push('cursor');
   if (existsSync(join(home, '.codex'))) agents.push('codex');
   if (existsSync(join(process.cwd(), '.windsurf'))) agents.push('windsurf');
+  if (existsSync(join(home, '.augment')) || existsSync(join(process.cwd(), '.augment'))) agents.push('augment');
 
   return agents;
 }

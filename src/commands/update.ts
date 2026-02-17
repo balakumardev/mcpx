@@ -51,7 +51,7 @@ export function createUpdateCommand(): Command {
           const tools = await discoverTools(entry.transport);
           console.log(`  Found ${tools.length} tool(s)`);
 
-          const ctx = { serverName: entry.name, tools, transport: entry.transport };
+          const ctx = { serverName: entry.name, tools, transport: entry.transport, scope: 'global' as const };
 
           for (const agent of entry.agents) {
             const generate = await getGenerator(agent);

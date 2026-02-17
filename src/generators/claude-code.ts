@@ -35,10 +35,13 @@ export function generate(ctx: GeneratorContext): GeneratedSkill {
     lines.push('');
   }
 
-  const filePath = join(homedir(), '.claude', 'skills', `mcpx-${ctx.serverName}`, 'SKILL.md');
+  const filePath = ctx.scope === 'global'
+    ? join(homedir(), '.claude', 'skills', `mcpx-${ctx.serverName}`, 'SKILL.md')
+    : join(process.cwd(), '.claude', 'skills', `mcpx-${ctx.serverName}`, 'SKILL.md');
 
   return {
     agent: 'claude-code',
+    scope: ctx.scope,
     filePath,
     content: lines.join('\n'),
     isAppend: false,

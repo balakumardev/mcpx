@@ -19,7 +19,7 @@ export function createRemoveCommand(): Command {
         }
 
         const agentsToRemove: AgentType[] = opts.agent ? [opts.agent] : entry.agents;
-        const ctx = { serverName: name, tools: [], transport: entry.transport };
+        const ctx = { serverName: name, tools: [], transport: entry.transport, scope: 'global' as const };
 
         for (const agent of agentsToRemove) {
           const generate = await getGenerator(agent);

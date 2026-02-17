@@ -46,13 +46,16 @@ export interface ToolInfo {
 }
 
 // Agent types
-export type AgentType = 'claude-code' | 'cursor' | 'codex' | 'windsurf';
+export type AgentType = 'claude-code' | 'cursor' | 'codex' | 'windsurf' | 'augment';
 
-export const ALL_AGENTS: AgentType[] = ['claude-code', 'cursor', 'codex', 'windsurf'];
+export const ALL_AGENTS: AgentType[] = ['claude-code', 'cursor', 'codex', 'windsurf', 'augment'];
+
+export type Scope = 'global' | 'project';
 
 // Generator types
 export interface GeneratedSkill {
   agent: AgentType;
+  scope: Scope;
   filePath: string;
   content: string;
   isAppend: boolean;
@@ -63,4 +66,5 @@ export interface GeneratorContext {
   description?: string;
   tools: ToolInfo[];
   transport: TransportConfig;
+  scope: Scope;
 }

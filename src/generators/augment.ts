@@ -1,3 +1,4 @@
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { GeneratorContext, GeneratedSkill } from '../types.js';
 import { buildParamTable, buildCallCommand } from './index.js';
@@ -7,7 +8,7 @@ export function generate(ctx: GeneratorContext): GeneratedSkill {
   const lines: string[] = [
     '---',
     `description: "MCP tools via mcpx — ${ctx.description || ctx.serverName}. Tools: ${toolNames}"`,
-    'alwaysApply: false',
+    'type: agent_requested',
     '---',
     '',
     `# ${ctx.serverName} (MCP Server)`,
@@ -29,10 +30,12 @@ export function generate(ctx: GeneratorContext): GeneratedSkill {
     lines.push('');
   }
 
-  const filePath = join(process.cwd(), '.cursor', 'rules', `mcpx-${ctx.serverName}.mdc`);
+  const filePath = ctx.scope === 'global'
+    ? join(homedir(), '.augment', 'rules', `mcpx-${ctx.serverName}.md`)
+    : join(process.cwd(), '.augment', 'rules', `mcpx-${ctx.serverName}.md`);
 
   return {
-    agent: 'cursor',
+    agent: 'augment',
     scope: ctx.scope,
     filePath,
     content: lines.join('\n'),
