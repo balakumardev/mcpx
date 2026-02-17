@@ -30,42 +30,10 @@ function deriveName(input: string): string {
     .replace(/^mcp-/, '');
 }
 
-// Write a generated skill file (handle append mode for codex)
-async function writeSkillFile(filePath: string, content: string, isAppend: boolean): Promise<void> {
+// Write a generated skill file
+async function writeSkillFile(filePath: string, content: string): Promise<void> {
   await mkdir(dirname(filePath), { recursive: true });
-
-  if (isAppend) {
-    // For codex: read existing file, replace section if exists, or append
-    let existing = '';
-    try {
-      existing = await readFile(filePath, 'utf-8');
-    } catch {
-      // File doesn't exist yet
-    }
-
-    // Extract server name from section markers
-    const startMarker = content.match(/<!-- mcpx:start:(\S+) -->/)?.[0];
-    const endMarker = content.match(/<!-- mcpx:end:(\S+) -->/)?.[0];
-
-    if (startMarker && endMarker && existing.includes(startMarker)) {
-      // Replace existing section
-      const regex = new RegExp(
-        `${escapeRegex(startMarker)}[\\s\\S]*?${escapeRegex(endMarker)}`,
-      );
-      const updated = existing.replace(regex, content);
-      await writeFile(filePath, updated, 'utf-8');
-    } else {
-      // Append to file
-      const separator = existing && !existing.endsWith('\n') ? '\n\n' : existing ? '\n' : '';
-      await writeFile(filePath, existing + separator + content, 'utf-8');
-    }
-  } else {
-    await writeFile(filePath, content, 'utf-8');
-  }
-}
-
-function escapeRegex(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  await writeFile(filePath, content, 'utf-8');
 }
 
 /**
@@ -259,7 +227,7 @@ async function installServer(
       console.log(chalk.dim(skill.content.slice(0, 200) + '...'));
       console.log();
     } else {
-      await writeSkillFile(skill.filePath, skill.content, skill.isAppend);
+      await writeSkillFile(skill.filePath, skill.content);
       console.log(chalk.green(`✓ ${agent}: ${skill.filePath}`));
     }
   }

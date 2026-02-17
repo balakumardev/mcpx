@@ -1,7 +1,8 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { rm } from 'node:fs/promises';
-import { getServer, removeServer } from '../config.js';
+import { dirname } from 'node:path';
+import { getServer, removeServer, addServer } from '../config.js';
 import { getGenerator } from '../generators/index.js';
 import type { AgentType } from '../types.js';
 
@@ -26,21 +27,9 @@ export function createRemoveCommand(): Command {
           const skill = generate(ctx);
 
           try {
-            if (skill.isAppend) {
-              // For codex: need to remove the section from AGENTS.md
-              const { readFile, writeFile } = await import('node:fs/promises');
-              const content = await readFile(skill.filePath, 'utf-8');
-              const startMarker = `<!-- mcpx:start:${name} -->`;
-              const endMarker = `<!-- mcpx:end:${name} -->`;
-              const regex = new RegExp(
-                `\\n?${startMarker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${endMarker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\n?`,
-              );
-              const updated = content.replace(regex, '\n');
-              await writeFile(skill.filePath, updated.trim() + '\n', 'utf-8');
-            } else {
-              await rm(skill.filePath, { recursive: true, force: true });
-            }
-            console.log(chalk.green(`✓ Removed ${agent} skill: ${skill.filePath}`));
+            // All generators now use SKILL.md in a skill directory — remove the directory
+            await rm(dirname(skill.filePath), { recursive: true, force: true });
+            console.log(chalk.green(`✓ Removed ${agent} skill: ${dirname(skill.filePath)}`));
           } catch {
             console.log(chalk.dim(`  ${agent}: nothing to remove`));
           }
@@ -50,8 +39,6 @@ export function createRemoveCommand(): Command {
           await removeServer(name);
           console.log(chalk.green(`✓ Server "${name}" removed from registry`));
         } else {
-          // Update agents list in registry
-          const { addServer } = await import('../config.js');
           entry.agents = entry.agents.filter(a => a !== opts.agent);
           if (entry.agents.length === 0) {
             await removeServer(name);

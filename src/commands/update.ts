@@ -1,34 +1,14 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
-import { mkdir, writeFile, readFile } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { getServer, listServers, addServer } from '../config.js';
 import { discoverTools } from '../client.js';
 import { getGenerator } from '../generators/index.js';
 
-// Same writeSkillFile helper as install
-async function writeSkillFile(filePath: string, content: string, isAppend: boolean): Promise<void> {
+async function writeSkillFile(filePath: string, content: string): Promise<void> {
   await mkdir(dirname(filePath), { recursive: true });
-
-  if (isAppend) {
-    let existing = '';
-    try { existing = await readFile(filePath, 'utf-8'); } catch { /* empty */ }
-
-    const startMarker = content.match(/<!-- mcpx:start:(\S+) -->/)?.[0];
-    const endMarker = content.match(/<!-- mcpx:end:(\S+) -->/)?.[0];
-
-    if (startMarker && endMarker && existing.includes(startMarker)) {
-      const regex = new RegExp(
-        `${startMarker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${endMarker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
-      );
-      await writeFile(filePath, existing.replace(regex, content), 'utf-8');
-    } else {
-      const separator = existing && !existing.endsWith('\n') ? '\n\n' : existing ? '\n' : '';
-      await writeFile(filePath, existing + separator + content, 'utf-8');
-    }
-  } else {
-    await writeFile(filePath, content, 'utf-8');
-  }
+  await writeFile(filePath, content, 'utf-8');
 }
 
 export function createUpdateCommand(): Command {
@@ -56,7 +36,7 @@ export function createUpdateCommand(): Command {
           for (const agent of entry.agents) {
             const generate = await getGenerator(agent);
             const skill = generate(ctx);
-            await writeSkillFile(skill.filePath, skill.content, skill.isAppend);
+            await writeSkillFile(skill.filePath, skill.content);
             console.log(chalk.green(`  ✓ ${agent}: ${skill.filePath}`));
           }
 

@@ -1,7 +1,7 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { existsSync } from 'node:fs';
-import type { AgentType, GeneratorContext, GeneratedSkill, ToolInfo } from '../types.js';
+import type { AgentType, GeneratorContext, GeneratedSkill } from '../types.js';
 
 // Build a markdown table from JSON Schema properties
 export function buildParamTable(schema: Record<string, unknown>): string {
@@ -19,24 +19,48 @@ export function buildParamTable(schema: Record<string, unknown>): string {
   return ['| Param | Type | Required | Description |', '|-------|------|----------|-------------|', ...rows].join('\n');
 }
 
-// Build compact inline param signature: (name: type, name: type)
-export function buildParamInline(schema: Record<string, unknown>): string {
-  const props = (schema.properties || {}) as Record<string, Record<string, unknown>>;
-  const required = (schema.required || []) as string[];
-  if (Object.keys(props).length === 0) return '()';
-
-  const parts = Object.entries(props).map(([name, prop]) => {
-    const type = (prop.type as string) || 'any';
-    const opt = required.includes(name) ? '' : '?';
-    return `${name}${opt}: ${type}`;
-  });
-
-  return `(${parts.join(', ')})`;
-}
-
 // Build mcpx call command string
 export function buildCallCommand(serverName: string, toolName: string): string {
   return `mcpx call ${serverName} ${toolName} '{}'`;
+}
+
+/**
+ * Build standard agentskills.io SKILL.md content.
+ * Shared across all generators since the format is the same.
+ */
+export function buildSkillContent(ctx: GeneratorContext): string {
+  const toolNames = ctx.tools.map(t => t.name).join(', ');
+  const lines: string[] = [
+    '---',
+    `name: mcpx-${ctx.serverName}`,
+    `description: "MCP tools via mcpx — ${ctx.description || ctx.serverName}. Tools: ${toolNames}"`,
+    '---',
+    '',
+    `# ${ctx.serverName} (MCP Server)`,
+    '',
+    ctx.description || 'MCP server installed via mcpx.',
+    '',
+    '## Tools',
+    '',
+  ];
+
+  for (const tool of ctx.tools) {
+    lines.push(`### ${tool.name}`);
+    lines.push('');
+    if (tool.description) lines.push(tool.description);
+    lines.push('');
+    lines.push('**Parameters:**');
+    lines.push('');
+    lines.push(buildParamTable(tool.inputSchema as Record<string, unknown>));
+    lines.push('');
+    lines.push('**Usage:**');
+    lines.push('```bash');
+    lines.push(buildCallCommand(ctx.serverName, tool.name));
+    lines.push('```');
+    lines.push('');
+  }
+
+  return lines.join('\n');
 }
 
 // Import generators lazily
@@ -57,8 +81,8 @@ export function detectAgents(): AgentType[] {
 
   if (existsSync(join(home, '.claude'))) agents.push('claude-code');
   if (existsSync(join(process.cwd(), '.cursor')) || existsSync(join(home, '.cursor'))) agents.push('cursor');
-  if (existsSync(join(home, '.codex'))) agents.push('codex');
-  if (existsSync(join(process.cwd(), '.windsurf'))) agents.push('windsurf');
+  if (existsSync(join(home, '.codex')) || existsSync(join(home, '.agents'))) agents.push('codex');
+  if (existsSync(join(process.cwd(), '.windsurf')) || existsSync(join(home, '.codeium'))) agents.push('windsurf');
   if (existsSync(join(home, '.augment')) || existsSync(join(process.cwd(), '.augment'))) agents.push('augment');
 
   return agents;
