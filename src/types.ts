@@ -1,0 +1,66 @@
+// Transport types
+export type TransportType = 'stdio' | 'http' | 'sse';
+
+export interface StdioTransportConfig {
+  type: 'stdio';
+  command: string;
+  args: string[];
+  env?: Record<string, string>;
+}
+
+export interface HttpTransportConfig {
+  type: 'http';
+  url: string;
+  headers?: Record<string, string>;
+}
+
+export interface SseTransportConfig {
+  type: 'sse';
+  url: string;
+  headers?: Record<string, string>;
+}
+
+export type TransportConfig = StdioTransportConfig | HttpTransportConfig | SseTransportConfig;
+
+// Registry types
+export interface ServerEntry {
+  name: string;
+  transport: TransportConfig;
+  description?: string;
+  toolCount: number;
+  agents: AgentType[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ServerRegistry {
+  version: 1;
+  servers: Record<string, ServerEntry>;
+}
+
+// Tool types
+export interface ToolInfo {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+}
+
+// Agent types
+export type AgentType = 'claude-code' | 'cursor' | 'codex' | 'windsurf';
+
+export const ALL_AGENTS: AgentType[] = ['claude-code', 'cursor', 'codex', 'windsurf'];
+
+// Generator types
+export interface GeneratedSkill {
+  agent: AgentType;
+  filePath: string;
+  content: string;
+  isAppend: boolean;
+}
+
+export interface GeneratorContext {
+  serverName: string;
+  description?: string;
+  tools: ToolInfo[];
+  transport: TransportConfig;
+}
