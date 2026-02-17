@@ -6,12 +6,20 @@
   "bin": {
     "mcpx": "./dist/cli.js"
   },
+  "files": [
+    "dist"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/balakumardev/mcpx"
+  },
   "scripts": {
     "build": "tsup",
     "dev": "tsx src/cli.ts",
-    "test": "vitest run"
+    "test": "vitest run",
+    "prepublishOnly": "npm run build"
   },
-  "keywords": ["mcp", "claude", "cursor", "codex", "windsurf", "skills"],
+  "keywords": ["mcp", "claude", "cursor", "codex", "windsurf", "augment", "skills", "agentskills"],
   "license": "MIT",
   "engines": {
     "node": ">=20"
