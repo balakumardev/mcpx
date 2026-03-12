@@ -1,12 +1,12 @@
 # mcpkit
 
-Universal MCP-to-Agent Skill Installer. Auto-discovers tools from any MCP server and installs lightweight skill/rule files into your AI coding agent.
+MCP client that turns any MCP server into CLI commands + lightweight agent skills — zero context bloat.
 
 **Supported agents:** Claude Code, Cursor, Windsurf, Augment Code, OpenAI Codex CLI
 
 ## Why
 
-AI coding agents can use MCP servers, but loading all tool schemas into context every turn wastes tokens. Each agent has its own skill/instruction system that loads context on-demand. `mcpkit` bridges these — auto-discovering MCP tools and installing skill files into whichever agent you use.
+AI coding agents load full MCP tool schemas into context every turn, wasting tokens. mcpkit solves this — it connects to any MCP server, generates on-demand skill files, and gives agents a simple `mcpkit call` CLI to invoke tools. Agents only read the skill when relevant, and call tools through the CLI instead of holding schemas in memory.
 
 ## Install
 

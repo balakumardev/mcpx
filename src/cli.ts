@@ -7,7 +7,7 @@ import { createUpdateCommand } from './commands/update.js';
 
 const program = new Command()
   .name('mcpkit')
-  .description('Universal MCP-to-Agent Skill Installer')
+  .description('Turn any MCP server into CLI commands + lightweight agent skills')
   .version(__PKG_VERSION__);
 
 program.addCommand(createInstallCommand());

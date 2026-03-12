@@ -1,7 +1,7 @@
 {
   "name": "@balakumar.dev/mcpkit",
   "version": "0.1.2",
-  "description": "Universal MCP-to-Agent Skill Installer",
+  "description": "MCP client that turns any MCP server into CLI commands + lightweight agent skills — zero context bloat",
   "type": "module",
   "bin": {
     "mcpkit": "./dist/cli.js"
