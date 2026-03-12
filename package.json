@@ -1,6 +1,6 @@
 {
   "name": "mcpkit",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Universal MCP-to-Agent Skill Installer",
   "type": "module",
   "bin": {
@@ -24,7 +24,17 @@
     "test": "vitest run",
     "prepublishOnly": "npm run build"
   },
-  "keywords": ["mcp", "mcpkit", "claude", "cursor", "codex", "windsurf", "augment", "skills", "agentskills"],
+  "keywords": [
+    "mcp",
+    "mcpkit",
+    "claude",
+    "cursor",
+    "codex",
+    "windsurf",
+    "augment",
+    "skills",
+    "agentskills"
+  ],
   "license": "MIT",
   "engines": {
     "node": ">=20"
