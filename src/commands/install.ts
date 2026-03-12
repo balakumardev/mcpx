@@ -1,10 +1,10 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
-import { mkdir, writeFile, readFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { readFile } from 'node:fs/promises';
 import { parseServerInput, discoverTools } from '../client.js';
 import { addServer } from '../config.js';
 import { getGenerator, detectAgents } from '../generators/index.js';
+import { writeSkillFile } from '../skill-file.js';
 import type { AgentType, Scope, ServerEntry, TransportConfig } from '../types.js';
 
 // Derive a short name from server spec
@@ -28,12 +28,6 @@ function deriveName(input: string): string {
     .replace(/^mcp-server-/, '')
     .replace(/^server-/, '')
     .replace(/^mcp-/, '');
-}
-
-// Write a generated skill file
-async function writeSkillFile(filePath: string, content: string): Promise<void> {
-  await mkdir(dirname(filePath), { recursive: true });
-  await writeFile(filePath, content, 'utf-8');
 }
 
 /**
@@ -258,6 +252,13 @@ export function createInstallCommand(): Command {
     .option('--header <header>', 'HTTP headers (Key: Value)', (val: string, prev: string[]) => [...prev, val], [] as string[])
     .option('--scope <scope>', 'Installation scope', 'global')
     .option('--dry-run', 'Show what would be generated without writing files')
+    .addHelpText('after', `
+Examples:
+  $ mcpkit install @modelcontextprotocol/server-github
+  $ mcpkit install https://mcp.example.com/sse
+  $ mcpkit install ./config.json
+  $ mcpkit install '{"mcpServers":{"gh":{"command":"npx","args":["-y","@modelcontextprotocol/server-github"]}}}'
+  $ mcpkit install @modelcontextprotocol/server-github -n github -a claude-code --scope project`)
     .action(async (serverSpec: string, opts) => {
       try {
         if (isJsonInput(serverSpec)) {

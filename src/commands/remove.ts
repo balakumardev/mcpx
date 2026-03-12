@@ -11,6 +11,10 @@ export function createRemoveCommand(): Command {
     .description('Remove an installed MCP server')
     .argument('<name>', 'Server name to remove')
     .option('-a, --agent <agent>', 'Remove only for specific agent')
+    .addHelpText('after', `
+Examples:
+  $ mcpkit remove github              Remove server and all skill files
+  $ mcpkit remove github -a cursor    Remove only Cursor skill files`)
     .action(async (name: string, opts) => {
       try {
         const entry = await getServer(name);

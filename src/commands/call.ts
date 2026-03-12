@@ -9,6 +9,10 @@ export function createCallCommand(): Command {
     .argument('<server>', 'Server name from registry')
     .argument('<tool>', 'Tool name to invoke')
     .argument('[params]', 'JSON parameters', '{}')
+    .addHelpText('after', `
+Examples:
+  $ mcpkit call github list_repos '{"owner":"octocat"}'
+  $ mcpkit call weather get_forecast '{"city":"London"}'`)
     .action(async (server: string, tool: string, paramsStr: string) => {
       try {
         const entry = await getServer(server);

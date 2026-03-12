@@ -1,20 +1,18 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
-import { mkdir, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
 import { getServer, listServers, addServer } from '../config.js';
 import { discoverTools } from '../client.js';
 import { getGenerator } from '../generators/index.js';
-
-async function writeSkillFile(filePath: string, content: string): Promise<void> {
-  await mkdir(dirname(filePath), { recursive: true });
-  await writeFile(filePath, content, 'utf-8');
-}
+import { writeSkillFile } from '../skill-file.js';
 
 export function createUpdateCommand(): Command {
   return new Command('update')
     .description('Re-discover tools and regenerate skill files')
     .argument('[name]', 'Server name (omit to update all)')
+    .addHelpText('after', `
+Examples:
+  $ mcpkit update                Update all servers
+  $ mcpkit update github         Update a specific server`)
     .action(async (name?: string) => {
       try {
         const servers = name ? [await getServer(name)].filter(Boolean) : await listServers();

@@ -7,6 +7,10 @@ export function createListCommand(): Command {
   return new Command('list')
     .description('List registered servers or tools on a server')
     .argument('[server]', 'Server name to show tools for')
+    .addHelpText('after', `
+Examples:
+  $ mcpkit list                  List all registered servers
+  $ mcpkit list github           Show tools for a specific server`)
     .action(async (server?: string) => {
       try {
         if (server) {
