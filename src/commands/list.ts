@@ -29,7 +29,7 @@ export function createListCommand(): Command {
           // Show all registered servers
           const servers = await listServers();
           if (servers.length === 0) {
-            console.log(chalk.yellow('No servers registered. Run `mcpx install <server>` to add one.'));
+            console.log(chalk.yellow('No servers registered. Run `mcpkit install <server>` to add one.'));
             return;
           }
 

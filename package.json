@@ -1,14 +1,19 @@
 {
-  "name": "mcpx",
+  "name": "mcpkit",
   "version": "0.1.0",
   "description": "Universal MCP-to-Agent Skill Installer",
   "type": "module",
   "bin": {
-    "mcpx": "./dist/cli.js"
+    "mcpkit": "./dist/cli.js"
   },
   "files": [
     "dist"
   ],
+  "author": "Bala Kumar <mail@balakumar.dev> (https://balakumar.dev)",
+  "homepage": "https://github.com/balakumardev/mcpx#readme",
+  "bugs": {
+    "url": "https://github.com/balakumardev/mcpx/issues"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/balakumardev/mcpx"
@@ -19,7 +24,7 @@
     "test": "vitest run",
     "prepublishOnly": "npm run build"
   },
-  "keywords": ["mcp", "claude", "cursor", "codex", "windsurf", "augment", "skills", "agentskills"],
+  "keywords": ["mcp", "mcpkit", "claude", "cursor", "codex", "windsurf", "augment", "skills", "agentskills"],
   "license": "MIT",
   "engines": {
     "node": ">=20"

@@ -7,7 +7,7 @@ import type { ServerEntry, ServerRegistry } from './types.js';
 const DEFAULT_REGISTRY: ServerRegistry = { version: 1, servers: {} };
 
 export function getRegistryPath(): string {
-  return join(homedir(), '.mcpx', 'servers.yaml');
+  return join(homedir(), '.mcpkit', 'servers.yaml');
 }
 
 export async function loadRegistry(): Promise<ServerRegistry> {
@@ -22,7 +22,7 @@ export async function loadRegistry(): Promise<ServerRegistry> {
 
 export async function saveRegistry(registry: ServerRegistry): Promise<void> {
   const filePath = getRegistryPath();
-  await mkdir(join(homedir(), '.mcpx'), { recursive: true });
+  await mkdir(join(homedir(), '.mcpkit'), { recursive: true });
   await writeFile(filePath, stringify(registry), 'utf-8');
 }
 

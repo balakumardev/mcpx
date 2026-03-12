@@ -65,7 +65,7 @@ export function createTransport(config: TransportConfig): Transport {
  * Connect to an MCP server, list its tools, then disconnect.
  */
 export async function discoverTools(config: TransportConfig): Promise<ToolInfo[]> {
-  const client = new Client({ name: 'mcpx', version: '0.1.0' });
+  const client = new Client({ name: 'mcpkit', version: __PKG_VERSION__ });
   const transport = createTransport(config);
 
   try {
@@ -90,7 +90,7 @@ export async function callTool(
   toolName: string,
   params: Record<string, unknown>,
 ): Promise<string> {
-  const client = new Client({ name: 'mcpx', version: '0.1.0' });
+  const client = new Client({ name: 'mcpkit', version: __PKG_VERSION__ });
   const transport = createTransport(config);
 
   try {

@@ -19,9 +19,9 @@ export function buildParamTable(schema: Record<string, unknown>): string {
   return ['| Param | Type | Required | Description |', '|-------|------|----------|-------------|', ...rows].join('\n');
 }
 
-// Build mcpx call command string
+// Build mcpkit call command string
 export function buildCallCommand(serverName: string, toolName: string): string {
-  return `mcpx call ${serverName} ${toolName} '{}'`;
+  return `mcpkit call ${serverName} ${toolName} '{}'`;
 }
 
 /**
@@ -32,16 +32,16 @@ export function buildSkillContent(ctx: GeneratorContext): string {
   const toolNames = ctx.tools.map(t => t.name).join(', ');
   const lines: string[] = [
     '---',
-    `name: mcpx-${ctx.serverName}`,
-    `description: "MCP tools via mcpx — ${ctx.description || ctx.serverName}. Tools: ${toolNames}"`,
+    `name: mcpkit-${ctx.serverName}`,
+    `description: "MCP tools via mcpkit — ${ctx.description || ctx.serverName}. Tools: ${toolNames}"`,
     '---',
     '',
     `# ${ctx.serverName} (MCP Server)`,
     '',
-    ctx.description || 'MCP server installed via mcpx.',
+    ctx.description || 'MCP server installed via mcpkit.',
     '',
     `> **Important:** These are NOT native MCP tools. Do NOT call them as \`mcp__${ctx.serverName}__*\` tools.`,
-    `> All tools must be invoked via Bash using \`mcpx call ${ctx.serverName} <tool_name> '<json_params>'\`.`,
+    `> All tools must be invoked via Bash using \`mcpkit call ${ctx.serverName} <tool_name> '<json_params>'\`.`,
     '',
     '## Tools',
     '',

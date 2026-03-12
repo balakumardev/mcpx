@@ -13,7 +13,7 @@ export function createCallCommand(): Command {
       try {
         const entry = await getServer(server);
         if (!entry) {
-          console.error(chalk.red(`Server "${server}" not found. Run 'mcpx list' to see registered servers.`));
+          console.error(chalk.red(`Server "${server}" not found. Run 'mcpkit list' to see registered servers.`));
           process.exit(1);
         }
 

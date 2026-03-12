@@ -6,9 +6,9 @@ import { createRemoveCommand } from './commands/remove.js';
 import { createUpdateCommand } from './commands/update.js';
 
 const program = new Command()
-  .name('mcpx')
+  .name('mcpkit')
   .description('Universal MCP-to-Agent Skill Installer')
-  .version('0.1.0');
+  .version(__PKG_VERSION__);
 
 program.addCommand(createInstallCommand());
 program.addCommand(createCallCommand());
