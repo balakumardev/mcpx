@@ -50,6 +50,7 @@ Options:
   -a, --agent <agent>  Target agent (repeatable: --agent claude-code --agent cursor)
   --scope <scope>      global or project (default: global)
   -e, --env <env>      Environment variables for stdio (repeatable: -e KEY=VALUE)
+  -d, --description    Custom skill description (overrides auto-generated)
   --header <header>    HTTP headers (repeatable: --header "Key: Value")
   --dry-run            Preview generated files without writing
 ```
@@ -137,6 +138,16 @@ All agents use the [agentskills.io](https://agentskills.io) open standard — a 
 | Windsurf | `~/.codeium/windsurf/skills/mcpkit-<name>/SKILL.md` | `.windsurf/skills/mcpkit-<name>/SKILL.md` |
 | Augment | `~/.augment/skills/mcpkit-<name>/SKILL.md` | `.augment/skills/mcpkit-<name>/SKILL.md` |
 | Codex CLI | `~/.codex/skills/mcpkit-<name>/SKILL.md` | `.agents/skills/mcpkit-<name>/SKILL.md` |
+
+## Why not just use tool search?
+
+Tool search exists in Claude Code but the problem is reliability. It uses regex/BM25 to find tools on demand and it misses things. Tool calls just don't happen because the search didn't match the right tool name.
+
+The setup that works: keep essential MCPs (the ones you use every session) always-on in your MCP config. Stuff you need on the fly like browser automation, google workspace etc, install through mcpkit as skills. A skill puts ~2 lines in the system prompt with a clear description of when to use it. The agent sees it every turn and triggers it reliably. No searching involved.
+
+The other thing is tool search is Claude Code only. If you use Cursor or Codex or Windsurf you don't have it at all. mcpkit generates skills for all of them from the same install.
+
+So it's not competing with tool search. It's more like: keep your core MCPs as MCPs, and use mcpkit for the rest so they're lightweight and available across agents without bloating your context.
 
 ## How It Works
 
