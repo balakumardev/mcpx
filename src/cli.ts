@@ -5,6 +5,8 @@ import { createListCommand } from './commands/list.js';
 import { createRemoveCommand } from './commands/remove.js';
 import { createUpdateCommand } from './commands/update.js';
 import { createSyncCommand } from './commands/sync.js';
+import { createViewCommand } from './commands/view.js';
+import { createEditCommand } from './commands/edit.js';
 
 const program = new Command()
   .name('mcpkit')
@@ -17,5 +19,7 @@ program.addCommand(createListCommand());
 program.addCommand(createRemoveCommand());
 program.addCommand(createUpdateCommand());
 program.addCommand(createSyncCommand());
+program.addCommand(createViewCommand());
+program.addCommand(createEditCommand());
 
 program.parse();
