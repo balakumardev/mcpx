@@ -2,6 +2,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import type { TransportConfig, ToolInfo, ServerMeta } from './types.js';
 
@@ -31,33 +32,77 @@ export function parseServerInput(input: string): TransportConfig {
 }
 
 /**
+ * Resolve ${VAR_NAME} references in a string with values from process.env.
+ * Throws if a referenced variable is not set.
+ */
+export function resolveEnvVars(value: string): string {
+  return value.replace(/\$\{([^}]+)\}/g, (_match, varName) => {
+    const resolved = process.env[varName];
+    if (resolved === undefined) {
+      throw new Error(`Environment variable "${varName}" is not set`);
+    }
+    return resolved;
+  });
+}
+
+/**
+ * Resolve env var references in all header values.
+ */
+export function resolveHeaders(headers: Record<string, string>): Record<string, string> {
+  const resolved: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    resolved[key] = resolveEnvVars(value);
+  }
+  return resolved;
+}
+
+/**
+ * Resolve env var references in all env values (for stdio transports).
+ */
+function resolveEnvValues(env: Record<string, string>): Record<string, string> {
+  const resolved: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    resolved[key] = resolveEnvVars(value);
+  }
+  return resolved;
+}
+
+/**
  * Create the appropriate MCP transport from a config object.
  */
-export function createTransport(config: TransportConfig): Transport {
+export function createTransport(config: TransportConfig, authProvider?: OAuthClientProvider): Transport {
   switch (config.type) {
-    case 'stdio':
+    case 'stdio': {
+      const env = config.env ? resolveEnvValues(config.env) : undefined;
       return new StdioClientTransport({
         command: config.command,
         args: config.args,
-        env: config.env ? { ...process.env as Record<string, string>, ...config.env } : undefined,
+        env: env ? { ...process.env as Record<string, string>, ...env } : undefined,
         stderr: 'pipe',
       });
+    }
 
-    case 'http':
+    case 'http': {
+      const headers = config.headers ? resolveHeaders(config.headers) : undefined;
       return new StreamableHTTPClientTransport(
         new URL(config.url),
-        config.headers
-          ? { requestInit: { headers: config.headers } }
-          : undefined,
+        {
+          ...(headers ? { requestInit: { headers } } : {}),
+          ...(authProvider ? { authProvider } : {}),
+        },
       );
+    }
 
-    case 'sse':
+    case 'sse': {
+      const headers = config.headers ? resolveHeaders(config.headers) : undefined;
       return new SSEClientTransport(
         new URL(config.url),
-        config.headers
-          ? { requestInit: { headers: config.headers } }
-          : undefined,
+        {
+          ...(headers ? { requestInit: { headers } } : {}),
+          ...(authProvider ? { authProvider } : {}),
+        },
       );
+    }
   }
 }
 
@@ -165,9 +210,9 @@ async function fetchPypiDescription(packageName: string): Promise<string | undef
 /**
  * Connect to an MCP server, list its tools, then disconnect.
  */
-export async function discoverTools(config: TransportConfig): Promise<DiscoveryResult> {
+export async function discoverTools(config: TransportConfig, authProvider?: OAuthClientProvider): Promise<DiscoveryResult> {
   const client = new Client({ name: 'mcpkit', version: __PKG_VERSION__ });
-  const transport = createTransport(config);
+  const transport = createTransport(config, authProvider);
 
   try {
     await client.connect(transport);
@@ -210,9 +255,10 @@ export async function callTool(
   config: TransportConfig,
   toolName: string,
   params: Record<string, unknown>,
+  authProvider?: OAuthClientProvider,
 ): Promise<string> {
   const client = new Client({ name: 'mcpkit', version: __PKG_VERSION__ });
-  const transport = createTransport(config);
+  const transport = createTransport(config, authProvider);
 
   try {
     await client.connect(transport);

@@ -10,6 +10,7 @@ export function createEditCommand(): Command {
     .option('--remove-env <KEY>', 'Remove an env var (stdio only)', collect, [])
     .option('--header <Key: Value>', 'Add/update a header (http/sse only)', collect, [])
     .option('--remove-header <KEY>', 'Remove a header (http/sse only)', collect, [])
+    .option('--auth <type>', 'Set auth type (oauth or none)')
     .option('--description <text>', 'Set server description')
     .option('--name <new-name>', 'Rename the server')
     .addHelpText('after', `
@@ -17,6 +18,8 @@ Examples:
   $ mcpkit edit github --env GITHUB_TOKEN=ghp_xxx
   $ mcpkit edit github --remove-env GITHUB_TOKEN
   $ mcpkit edit myapi --header "Authorization: Bearer tok_xxx"
+  $ mcpkit edit myapi --auth oauth
+  $ mcpkit edit myapi --auth none
   $ mcpkit edit myapi --description "My custom API server"
   $ mcpkit edit github --name gh`)
     .action(async (name: string, opts) => {
@@ -100,6 +103,24 @@ Examples:
             changed = true;
           } else {
             console.warn(chalk.yellow(`Header "${key}" not found.`));
+          }
+        }
+
+        // --auth
+        if (opts.auth !== undefined) {
+          if (entry.transport.type === 'stdio') {
+            console.warn(chalk.yellow(`Warning: --auth is only for http/sse servers. "${name}" uses stdio.`));
+          } else if (opts.auth === 'none') {
+            delete entry.transport.auth;
+            console.log(chalk.green(`✓ Removed auth`));
+            changed = true;
+          } else if (opts.auth === 'oauth') {
+            entry.transport.auth = 'oauth';
+            console.log(chalk.green(`✓ Set auth to oauth`));
+            changed = true;
+          } else {
+            console.error(chalk.red(`Invalid auth type "${opts.auth}". Use "oauth" or "none".`));
+            process.exit(1);
           }
         }
 

@@ -1,5 +1,6 @@
 // Transport types
 export type TransportType = 'stdio' | 'http' | 'sse';
+export type AuthType = 'oauth';
 
 export interface StdioTransportConfig {
   type: 'stdio';
@@ -12,12 +13,14 @@ export interface HttpTransportConfig {
   type: 'http';
   url: string;
   headers?: Record<string, string>;
+  auth?: AuthType;
 }
 
 export interface SseTransportConfig {
   type: 'sse';
   url: string;
   headers?: Record<string, string>;
+  auth?: AuthType;
 }
 
 export type TransportConfig = StdioTransportConfig | HttpTransportConfig | SseTransportConfig;

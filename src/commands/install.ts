@@ -5,7 +5,8 @@ import { parseServerInput, discoverTools } from '../client.js';
 import { addServer } from '../config.js';
 import { getGenerator, detectAgents } from '../generators/index.js';
 import { writeSkillFile } from '../skill-file.js';
-import type { AgentType, Scope, ServerEntry, TransportConfig } from '../types.js';
+import { authenticateIfNeeded } from '../auth.js';
+import type { AgentType, AuthType, Scope, ServerEntry, TransportConfig } from '../types.js';
 
 // Derive a short name from server spec
 function deriveName(input: string): string {
@@ -165,6 +166,7 @@ async function installServer(
     agent: string[];
     env?: string[];
     header?: string[];
+    auth?: AuthType;
     description?: string;
     dryRun?: boolean;
     scope: Scope;
@@ -190,10 +192,20 @@ async function installServer(
     (transport as any).headers = headers;
   }
 
+  // Set auth type on transport
+  if (opts.auth && (transport.type === 'http' || transport.type === 'sse')) {
+    transport.auth = opts.auth;
+  }
+
   console.log(chalk.blue(`Connecting to server "${name}"...`));
 
+  // If OAuth, authenticate first
+  const authProvider = (transport.type === 'http' || transport.type === 'sse') && transport.auth === 'oauth'
+    ? await authenticateIfNeeded(transport.url)
+    : undefined;
+
   // Discover tools and server metadata
-  const { tools, serverMeta } = await discoverTools(transport);
+  const { tools, serverMeta } = await discoverTools(transport, authProvider);
   console.log(chalk.green(`Found ${tools.length} tool(s)${serverMeta.name ? ` on "${serverMeta.name}"` : ''}:`));
   for (const tool of tools) {
     console.log(`  ${chalk.bold(tool.name)} — ${tool.description || '(no description)'}`);
@@ -255,6 +267,7 @@ export function createInstallCommand(): Command {
     .option('-a, --agent <agent>', 'Target agent(s)', (val: string, prev: string[]) => [...prev, val], [] as string[])
     .option('-e, --env <env>', 'Environment variables (KEY=VALUE)', (val: string, prev: string[]) => [...prev, val], [] as string[])
     .option('--header <header>', 'HTTP headers (Key: Value)', (val: string, prev: string[]) => [...prev, val], [] as string[])
+    .option('--auth <type>', 'Authentication type (oauth)')
     .option('-d, --description <text>', 'Custom skill description for agent routing (overrides auto-generated)')
     .option('--scope <scope>', 'Installation scope', 'global')
     .option('--dry-run', 'Show what would be generated without writing files')
@@ -282,6 +295,7 @@ Examples:
               agent: opts.agent,
               env: opts.env,
               header: opts.header,
+              auth: opts.auth,
               description: opts.description,
               dryRun: opts.dryRun,
               scope: opts.scope || 'global',
@@ -296,6 +310,7 @@ Examples:
             agent: opts.agent,
             env: opts.env,
             header: opts.header,
+            auth: opts.auth,
             description: opts.description,
             dryRun: opts.dryRun,
             scope: opts.scope || 'global',

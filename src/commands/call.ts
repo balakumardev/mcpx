@@ -2,6 +2,7 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import { getServer } from '../config.js';
 import { callTool } from '../client.js';
+import { authenticateIfNeeded } from '../auth.js';
 
 export function createCallCommand(): Command {
   return new Command('call')
@@ -21,8 +22,13 @@ Examples:
           process.exit(1);
         }
 
+        // If OAuth, authenticate first
+        const authProvider = (entry.transport.type === 'http' || entry.transport.type === 'sse') && entry.transport.auth === 'oauth'
+          ? await authenticateIfNeeded(entry.transport.url)
+          : undefined;
+
         const params = JSON.parse(paramsStr);
-        const result = await callTool(entry.transport, tool, params);
+        const result = await callTool(entry.transport, tool, params, authProvider);
         process.stdout.write(result);
       } catch (err) {
         console.error(chalk.red(`Error: ${err instanceof Error ? err.message : err}`));

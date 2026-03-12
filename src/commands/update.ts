@@ -4,6 +4,7 @@ import { getServer, listServers, addServer } from '../config.js';
 import { discoverTools } from '../client.js';
 import { getGenerator } from '../generators/index.js';
 import { writeSkillFile } from '../skill-file.js';
+import { authenticateIfNeeded } from '../auth.js';
 
 export function createUpdateCommand(): Command {
   return new Command('update')
@@ -26,7 +27,12 @@ Examples:
           if (!entry) continue;
           console.log(chalk.blue(`Updating ${entry.name}...`));
 
-          const { tools, serverMeta } = await discoverTools(entry.transport);
+          // If OAuth, authenticate first
+          const authProvider = (entry.transport.type === 'http' || entry.transport.type === 'sse') && entry.transport.auth === 'oauth'
+            ? await authenticateIfNeeded(entry.transport.url)
+            : undefined;
+
+          const { tools, serverMeta } = await discoverTools(entry.transport, authProvider);
           console.log(`  Found ${tools.length} tool(s)`);
 
           const ctx = { serverName: entry.name, tools, transport: entry.transport, description: entry.description, serverMeta, scope: 'global' as const };

@@ -55,6 +55,10 @@ Examples:
         } else {
           console.log(`  URL:     ${entry.transport.url}`);
 
+          if (entry.transport.auth) {
+            console.log(`  Auth:    ${entry.transport.auth}`);
+          }
+
           if (entry.transport.headers && Object.keys(entry.transport.headers).length > 0) {
             console.log(chalk.blue('\nHeaders'));
             for (const [key, value] of Object.entries(entry.transport.headers)) {

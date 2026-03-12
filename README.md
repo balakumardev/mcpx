@@ -52,6 +52,7 @@ Options:
   -e, --env <env>      Environment variables for stdio (repeatable: -e KEY=VALUE)
   -d, --description    Custom skill description (overrides auto-generated)
   --header <header>    HTTP headers (repeatable: --header "Key: Value")
+  --auth <type>        Authentication type (oauth)
   --dry-run            Preview generated files without writing
 ```
 
@@ -119,6 +120,40 @@ Uninstall a server — deletes skill files and registry entry.
 mcpkit remove filesystem
 mcpkit remove filesystem --agent cursor   # Remove only from Cursor
 ```
+
+### `mcpkit auth <name>`
+
+Manage OAuth authentication for a server.
+
+```bash
+mcpkit auth linear              # Run OAuth flow
+mcpkit auth linear --status     # Check if authenticated
+mcpkit auth linear --reset      # Clear tokens and re-authenticate
+```
+
+## Authentication
+
+### Env Var Expansion
+
+Headers and stdio env values support `${VAR_NAME}` syntax. Variables are stored as-is in the registry and resolved at call time from your environment:
+
+```bash
+mcpkit install https://api.example.com --header "Authorization: Bearer \${MY_API_KEY}"
+# servers.yaml stores: Authorization: Bearer ${MY_API_KEY}
+# At call time: resolves to the actual value from process.env
+```
+
+### OAuth
+
+For MCP servers that require OAuth (e.g., Linear, Vercel), use the `--auth oauth` flag:
+
+```bash
+mcpkit install https://mcp.linear.app --auth oauth -n linear
+# Browser opens → authorize → tokens cached → tools discovered
+mcpkit call linear list_issues '{}'  # Uses cached tokens automatically
+```
+
+OAuth credentials are stored at `~/.mcpkit/credentials.json` with restricted file permissions. Tokens are refreshed automatically when expired.
 
 ## Scope: Global vs Project
 
