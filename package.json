@@ -1,5 +1,5 @@
 {
-  "name": "mcpkit",
+  "name": "@balakumar.dev/mcpkit",
   "version": "0.1.1",
   "description": "Universal MCP-to-Agent Skill Installer",
   "type": "module",

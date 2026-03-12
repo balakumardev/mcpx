@@ -11,7 +11,7 @@ AI coding agents can use MCP servers, but loading all tool schemas into context 
 ## Install
 
 ```bash
-npm install -g mcpkit
+npm install -g @balakumar.dev/mcpkit
 ```
 
 Requires Node.js >= 20.
