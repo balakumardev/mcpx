@@ -1,7 +1,7 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { existsSync } from 'node:fs';
-import type { AgentType, GeneratorContext, GeneratedSkill } from '../types.js';
+import type { AgentType, GeneratorContext, GeneratedSkill, ToolInfo } from '../types.js';
 
 // Build a markdown table from JSON Schema properties
 export function buildParamTable(schema: Record<string, unknown>): string {
@@ -25,27 +25,128 @@ export function buildCallCommand(serverName: string, toolName: string): string {
 }
 
 /**
+ * Infer the primary domain from tool name prefixes.
+ * e.g., tools named browser_navigate, browser_click → "browser"
+ */
+function inferDomain(tools: ToolInfo[]): string {
+  const prefixCounts: Record<string, number> = {};
+  for (const tool of tools) {
+    const prefix = tool.name.split(/[_-]/)[0];
+    if (prefix) prefixCounts[prefix] = (prefixCounts[prefix] || 0) + 1;
+  }
+  const sorted = Object.entries(prefixCounts).sort((a, b) => b[1] - a[1]);
+  // Use dominant prefix if it covers >40% of tools
+  if (sorted.length > 0 && sorted[0][1] > tools.length * 0.4) {
+    return sorted[0][0];
+  }
+  return '';
+}
+
+/**
+ * Build a short capability summary from tool descriptions.
+ * Extracts the core action from each description (first clause only).
+ * Returns concise phrases like "navigate pages, click elements, type text".
+ */
+function buildCapabilitySummary(tools: ToolInfo[], maxItems = 6): string {
+  const descriptions = tools
+    .filter(t => t.description)
+    .map(t => {
+      const desc = t.description.toLowerCase();
+      // Take just the first clause — stop at period, semicolon, or "use this"
+      const match = desc.match(/^([^.;!]+?)(?:\.|;|$)/);
+      return (match ? match[1] : desc).trim().replace(/\.$/, '');
+    })
+    // Deduplicate similar descriptions
+    .filter((desc, i, arr) => arr.indexOf(desc) === i);
+
+  if (descriptions.length === 0) return '';
+
+  return descriptions.slice(0, maxItems).join(', ');
+}
+
+/**
+ * Build the frontmatter description — the critical line agents see in skill listings.
+ *
+ * Priority:
+ *   1. User-provided description (--description flag)
+ *   2. MCP server instructions (from initialize response)
+ *   3. npm package description (for npx-based servers)
+ *   4. Auto-generated from tool descriptions
+ */
+function buildFrontmatterDescription(ctx: GeneratorContext): string {
+  // 1. User-provided description takes priority
+  if (ctx.description) {
+    return ctx.description;
+  }
+
+  const serverName = ctx.serverMeta?.name || ctx.serverName;
+  const domain = inferDomain(ctx.tools) || serverName;
+  const capabilities = buildCapabilitySummary(ctx.tools);
+
+  // 2. MCP server instructions
+  if (ctx.serverMeta?.instructions) {
+    const instructions = ctx.serverMeta.instructions.replace(/\n/g, ' ').trim();
+    return `${serverName} via mcpkit — ${instructions}`;
+  }
+
+  // 3. npm package description — enrich with capabilities
+  if (ctx.serverMeta?.packageDescription) {
+    const npmDesc = ctx.serverMeta.packageDescription;
+    if (capabilities) {
+      return `${npmDesc} via mcpkit — ${capabilities}. Use this when you need to work with ${domain}.`;
+    }
+    return `${npmDesc} via mcpkit. Use this when you need to work with ${domain}.`;
+  }
+
+  // 4. Auto-generated from tool metadata
+  if (capabilities) {
+    return `${capitalize(domain)} tools via mcpkit — ${capabilities}. Use this when you need to work with ${domain}.`;
+  }
+
+  return `${capitalize(domain)} tools via mcpkit. Use this when you need to work with ${domain}.`;
+}
+
+function capitalize(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+/**
  * Build standard agentskills.io SKILL.md content.
  * Shared across all generators since the format is the same.
  */
 export function buildSkillContent(ctx: GeneratorContext): string {
-  const toolNames = ctx.tools.map(t => t.name).join(', ');
+  const description = buildFrontmatterDescription(ctx);
+  const serverName = ctx.serverMeta?.name || ctx.serverName;
+  const domain = inferDomain(ctx.tools) || serverName;
+
   const lines: string[] = [
     '---',
     `name: mcpkit-${ctx.serverName}`,
-    `description: "MCP tools via mcpkit — ${ctx.description || ctx.serverName}. Tools: ${toolNames}"`,
+    `description: "${description}"`,
     '---',
     '',
-    `# ${ctx.serverName} (MCP Server)`,
+    `# ${serverName} (MCP Server)`,
     '',
-    ctx.description || 'MCP server installed via mcpkit.',
+    ctx.description || ctx.serverMeta?.instructions || ctx.serverMeta?.packageDescription || `${capitalize(domain)} tools installed via mcpkit.`,
     '',
     `> **Important:** These are NOT native MCP tools. Do NOT call them as \`mcp__${ctx.serverName}__*\` tools.`,
     `> All tools must be invoked via Bash using \`mcpkit call ${ctx.serverName} <tool_name> '<json_params>'\`.`,
     '',
-    '## Tools',
+    '## When to Use',
     '',
+    `Use this skill when you need to:`,
   ];
+
+  // Build "When to use" bullets from tool descriptions
+  for (const tool of ctx.tools) {
+    if (tool.description) {
+      lines.push(`- ${tool.description}`);
+    }
+  }
+  lines.push('');
+
+  lines.push('## Tools');
+  lines.push('');
 
   for (const tool of ctx.tools) {
     lines.push(`### ${tool.name}`);

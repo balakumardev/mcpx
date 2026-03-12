@@ -52,6 +52,14 @@ export const ALL_AGENTS: AgentType[] = ['claude-code', 'cursor', 'codex', 'winds
 
 export type Scope = 'global' | 'project';
 
+// Server metadata from MCP initialize + npm registry
+export interface ServerMeta {
+  name?: string;
+  version?: string;
+  instructions?: string;
+  packageDescription?: string;
+}
+
 // Generator types
 export interface GeneratedSkill {
   agent: AgentType;
@@ -64,6 +72,7 @@ export interface GeneratedSkill {
 export interface GeneratorContext {
   serverName: string;
   description?: string;
+  serverMeta?: ServerMeta;
   tools: ToolInfo[];
   transport: TransportConfig;
   scope: Scope;

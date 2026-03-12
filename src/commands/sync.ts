@@ -55,14 +55,14 @@ Examples:
             console.log(chalk.blue(`Syncing ${entry.name}...`));
 
             // Connect and discover tools
-            const tools = await discoverTools(entry.transport);
+            const { tools, serverMeta } = await discoverTools(entry.transport);
             console.log(`  Found ${tools.length} tool(s)`);
 
             // Re-detect agents (picks up newly installed agents)
             let agents = detectAgents();
             if (agents.length === 0) agents = ['claude-code'] as AgentType[];
 
-            const ctx = { serverName: entry.name, tools, transport: entry.transport, scope: 'global' as const };
+            const ctx = { serverName: entry.name, tools, transport: entry.transport, description: entry.description, serverMeta, scope: 'global' as const };
 
             for (const agent of agents) {
               const generate = await getGenerator(agent);

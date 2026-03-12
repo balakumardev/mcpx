@@ -165,6 +165,7 @@ async function installServer(
     agent: string[];
     env?: string[];
     header?: string[];
+    description?: string;
     dryRun?: boolean;
     scope: Scope;
   },
@@ -191,11 +192,14 @@ async function installServer(
 
   console.log(chalk.blue(`Connecting to server "${name}"...`));
 
-  // Discover tools
-  const tools = await discoverTools(transport);
-  console.log(chalk.green(`Found ${tools.length} tool(s):`));
+  // Discover tools and server metadata
+  const { tools, serverMeta } = await discoverTools(transport);
+  console.log(chalk.green(`Found ${tools.length} tool(s)${serverMeta.name ? ` on "${serverMeta.name}"` : ''}:`));
   for (const tool of tools) {
     console.log(`  ${chalk.bold(tool.name)} — ${tool.description || '(no description)'}`);
+  }
+  if (serverMeta.instructions) {
+    console.log(chalk.dim(`\n  Server instructions: ${serverMeta.instructions}`));
   }
   console.log();
 
@@ -210,7 +214,7 @@ async function installServer(
 
   // Generate skill files
   const scope: Scope = opts.scope || 'global';
-  const ctx = { serverName: name, tools, transport, description: undefined, scope };
+  const ctx = { serverName: name, tools, transport, description: opts.description, serverMeta, scope };
 
   for (const agent of agents) {
     const generate = await getGenerator(agent);
@@ -232,6 +236,7 @@ async function installServer(
     const entry: ServerEntry = {
       name,
       transport,
+      ...(opts.description ? { description: opts.description } : {}),
       toolCount: tools.length,
       agents,
       createdAt: now,
@@ -250,6 +255,7 @@ export function createInstallCommand(): Command {
     .option('-a, --agent <agent>', 'Target agent(s)', (val: string, prev: string[]) => [...prev, val], [] as string[])
     .option('-e, --env <env>', 'Environment variables (KEY=VALUE)', (val: string, prev: string[]) => [...prev, val], [] as string[])
     .option('--header <header>', 'HTTP headers (Key: Value)', (val: string, prev: string[]) => [...prev, val], [] as string[])
+    .option('-d, --description <text>', 'Custom skill description for agent routing (overrides auto-generated)')
     .option('--scope <scope>', 'Installation scope', 'global')
     .option('--dry-run', 'Show what would be generated without writing files')
     .addHelpText('after', `
@@ -276,6 +282,7 @@ Examples:
               agent: opts.agent,
               env: opts.env,
               header: opts.header,
+              description: opts.description,
               dryRun: opts.dryRun,
               scope: opts.scope || 'global',
             });
@@ -289,6 +296,7 @@ Examples:
             agent: opts.agent,
             env: opts.env,
             header: opts.header,
+            description: opts.description,
             dryRun: opts.dryRun,
             scope: opts.scope || 'global',
           });

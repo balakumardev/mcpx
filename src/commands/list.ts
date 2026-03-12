@@ -22,8 +22,8 @@ Examples:
           }
 
           console.log(chalk.blue(`Connecting to ${server}...`));
-          const tools = await discoverTools(entry.transport);
-          console.log(chalk.bold(`\nTools on ${server} (${tools.length}):\n`));
+          const { tools, serverMeta } = await discoverTools(entry.transport);
+          console.log(chalk.bold(`\nTools on ${serverMeta.name || server} (${tools.length}):\n`));
 
           for (const tool of tools) {
             console.log(`  ${chalk.bold(tool.name)}`);

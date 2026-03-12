@@ -26,10 +26,10 @@ Examples:
           if (!entry) continue;
           console.log(chalk.blue(`Updating ${entry.name}...`));
 
-          const tools = await discoverTools(entry.transport);
+          const { tools, serverMeta } = await discoverTools(entry.transport);
           console.log(`  Found ${tools.length} tool(s)`);
 
-          const ctx = { serverName: entry.name, tools, transport: entry.transport, scope: 'global' as const };
+          const ctx = { serverName: entry.name, tools, transport: entry.transport, description: entry.description, serverMeta, scope: 'global' as const };
 
           for (const agent of entry.agents) {
             const generate = await getGenerator(agent);
