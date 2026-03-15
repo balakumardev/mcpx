@@ -18,10 +18,12 @@ Examples:
   $ mcpkit edit github --env GITHUB_TOKEN=ghp_xxx
   $ mcpkit edit github --remove-env GITHUB_TOKEN
   $ mcpkit edit myapi --header "Authorization: Bearer tok_xxx"
-  $ mcpkit edit myapi --auth oauth
-  $ mcpkit edit myapi --auth none
   $ mcpkit edit myapi --description "My custom API server"
-  $ mcpkit edit github --name gh`)
+  $ mcpkit edit github --name gh
+
+Enable/disable OAuth:
+  $ mcpkit edit postman --auth oauth    # Then run: mcpkit auth postman
+  $ mcpkit edit postman --auth none     # Remove OAuth`)
     .action(async (name: string, opts) => {
       try {
         const entry = await getServer(name);

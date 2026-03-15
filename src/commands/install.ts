@@ -277,7 +277,11 @@ Examples:
   $ mcpkit install https://mcp.example.com/sse
   $ mcpkit install ./config.json
   $ mcpkit install '{"mcpServers":{"gh":{"command":"npx","args":["-y","@modelcontextprotocol/server-github"]}}}'
-  $ mcpkit install @modelcontextprotocol/server-github -n github -a claude-code --scope project`)
+  $ mcpkit install @modelcontextprotocol/server-github -n github -a claude-code --scope project
+
+OAuth servers:
+  $ mcpkit install https://mcp.postman.com/mcp --auth oauth -n postman
+  $ mcpkit install https://mcp.linear.app --auth oauth -n linear`)
     .action(async (serverSpec: string, opts) => {
       try {
         if (isJsonInput(serverSpec)) {

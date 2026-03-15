@@ -13,7 +13,8 @@ export function createCallCommand(): Command {
     .addHelpText('after', `
 Examples:
   $ mcpkit call github list_repos '{"owner":"octocat"}'
-  $ mcpkit call weather get_forecast '{"city":"London"}'`)
+  $ mcpkit call weather get_forecast '{"city":"London"}'
+  $ mcpkit call postman list_collections '{}'    # OAuth tokens used automatically`)
     .action(async (server: string, tool: string, paramsStr: string) => {
       try {
         const entry = await getServer(server);

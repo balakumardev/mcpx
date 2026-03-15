@@ -11,9 +11,13 @@ export function createAuthCommand(): Command {
     .option('--reset', 'Clear cached tokens and re-authenticate')
     .addHelpText('after', `
 Examples:
-  $ mcpkit auth linear              # Run OAuth flow
-  $ mcpkit auth linear --status     # Check if authenticated
-  $ mcpkit auth linear --reset      # Clear tokens and re-authenticate`)
+  $ mcpkit auth postman             # Run OAuth flow (opens browser)
+  $ mcpkit auth postman --status    # Check if authenticated
+  $ mcpkit auth postman --reset     # Clear tokens and re-authenticate
+
+To enable OAuth on an existing server:
+  $ mcpkit edit myserver --auth oauth
+  $ mcpkit auth myserver`)
     .action(async (name: string, opts) => {
       try {
         const entry = await getServer(name);
