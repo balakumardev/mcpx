@@ -29,7 +29,7 @@ Examples:
 
           // If OAuth, authenticate first
           const authProvider = (entry.transport.type === 'http' || entry.transport.type === 'sse') && entry.transport.auth === 'oauth'
-            ? await authenticateIfNeeded(entry.transport.url)
+            ? await authenticateIfNeeded(entry.transport.url, entry.transport.oauth)
             : undefined;
 
           const { tools, serverMeta } = await discoverTools(entry.transport, authProvider);

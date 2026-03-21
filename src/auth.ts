@@ -7,6 +7,7 @@ import { platform } from 'node:os';
 import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js';
 import { auth } from '@modelcontextprotocol/sdk/client/auth.js';
 import type { OAuthClientMetadata, OAuthClientInformationMixed, OAuthTokens } from '@modelcontextprotocol/sdk/shared/auth.js';
+import type { OAuthConfig } from './types.js';
 
 // --- Credential storage ---
 
@@ -149,12 +150,14 @@ export class McpkitOAuthProvider implements OAuthClientProvider {
   private port: number;
   private store: CredentialStore;
   private credentials: ServerCredentials;
+  private oauthConfig?: OAuthConfig;
   private _codePromise?: Promise<CallbackResult>;
 
-  constructor(serverUrl: string, port: number, store: CredentialStore) {
+  constructor(serverUrl: string, port: number, store: CredentialStore, oauthConfig?: OAuthConfig) {
     this.serverUrl = serverUrl;
     this.port = port;
     this.store = store;
+    this.oauthConfig = oauthConfig;
     this.credentials = store[serverUrl] || {};
   }
 
@@ -165,7 +168,7 @@ export class McpkitOAuthProvider implements OAuthClientProvider {
   get clientMetadata(): OAuthClientMetadata {
     return {
       redirect_uris: [this.redirectUrl],
-      token_endpoint_auth_method: 'none',
+      token_endpoint_auth_method: this.oauthConfig?.clientSecret ? 'client_secret_post' : 'none',
       grant_types: ['authorization_code', 'refresh_token'],
       response_types: ['code'],
       client_name: 'mcpkit',
@@ -173,7 +176,17 @@ export class McpkitOAuthProvider implements OAuthClientProvider {
   }
 
   clientInformation(): OAuthClientInformationMixed | undefined {
-    return this.credentials.clientInfo;
+    if (this.credentials.clientInfo) {
+      return this.credentials.clientInfo;
+    }
+    // Return pre-configured client ID to skip dynamic client registration
+    if (this.oauthConfig?.clientId) {
+      return {
+        client_id: this.oauthConfig.clientId,
+        ...(this.oauthConfig.clientSecret ? { client_secret: this.oauthConfig.clientSecret } : {}),
+      } as OAuthClientInformationMixed;
+    }
+    return undefined;
   }
 
   async saveClientInformation(info: OAuthClientInformationMixed): Promise<void> {
@@ -239,14 +252,14 @@ export class McpkitOAuthProvider implements OAuthClientProvider {
 
 // --- High-level helpers ---
 
-export async function createOAuthProvider(serverUrl: string): Promise<McpkitOAuthProvider> {
+export async function createOAuthProvider(serverUrl: string, oauthConfig?: OAuthConfig): Promise<McpkitOAuthProvider> {
   const store = await loadCredentials();
-  const port = await findAvailablePort();
-  return new McpkitOAuthProvider(serverUrl, port, store);
+  const port = oauthConfig?.callbackPort ?? await findAvailablePort();
+  return new McpkitOAuthProvider(serverUrl, port, store, oauthConfig);
 }
 
-export async function authenticateIfNeeded(serverUrl: string): Promise<McpkitOAuthProvider> {
-  const provider = await createOAuthProvider(serverUrl);
+export async function authenticateIfNeeded(serverUrl: string, oauthConfig?: OAuthConfig): Promise<McpkitOAuthProvider> {
+  const provider = await createOAuthProvider(serverUrl, oauthConfig);
 
   const result = await auth(provider, { serverUrl });
 

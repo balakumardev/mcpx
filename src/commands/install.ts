@@ -6,7 +6,7 @@ import { addServer } from '../config.js';
 import { getGenerator, detectAgents } from '../generators/index.js';
 import { writeSkillFile } from '../skill-file.js';
 import { authenticateIfNeeded } from '../auth.js';
-import type { AgentType, AuthType, Scope, ServerEntry, TransportConfig } from '../types.js';
+import type { AgentType, AuthType, OAuthConfig, Scope, ServerEntry, TransportConfig } from '../types.js';
 
 // Derive a short name from server spec
 function deriveName(input: string): string {
@@ -29,6 +29,19 @@ function deriveName(input: string): string {
     .replace(/^mcp-server-/, '')
     .replace(/^server-/, '')
     .replace(/^mcp-/, '');
+}
+
+/**
+ * Parse an OAuth config object from JSON input.
+ */
+function parseOAuthConfig(raw: unknown): OAuthConfig | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const obj = raw as Record<string, unknown>;
+  const config: OAuthConfig = {};
+  if (typeof obj.clientId === 'string') config.clientId = obj.clientId;
+  if (typeof obj.clientSecret === 'string') config.clientSecret = obj.clientSecret;
+  if (typeof obj.callbackPort === 'number') config.callbackPort = obj.callbackPort;
+  return Object.keys(config).length > 0 ? config : undefined;
 }
 
 /**
@@ -73,10 +86,12 @@ function parseJsonServers(
   if (typeof json.url === 'string') {
     const url = json.url as string;
     const type = url.endsWith('/sse') ? 'sse' : 'http';
+    const oauth = parseOAuthConfig(json.oauth);
     const transport: TransportConfig = {
       type,
       url,
       ...(json.headers ? { headers: json.headers as Record<string, string> } : {}),
+      ...(oauth ? { auth: 'oauth' as const, oauth } : {}),
     } as TransportConfig;
     const name = nameOverride || deriveName(url);
     results.push({ name, transport });
@@ -102,10 +117,12 @@ function jsonEntryToTransport(config: Record<string, unknown>): TransportConfig 
   if (typeof config.url === 'string') {
     const url = config.url as string;
     const type = url.endsWith('/sse') ? 'sse' : 'http';
+    const oauth = parseOAuthConfig(config.oauth);
     return {
       type,
       url,
       ...(config.headers ? { headers: config.headers as Record<string, string> } : {}),
+      ...(oauth ? { auth: 'oauth' as const, oauth } : {}),
     } as TransportConfig;
   }
 
@@ -201,7 +218,7 @@ async function installServer(
 
   // If OAuth, authenticate first
   const authProvider = (transport.type === 'http' || transport.type === 'sse') && transport.auth === 'oauth'
-    ? await authenticateIfNeeded(transport.url)
+    ? await authenticateIfNeeded(transport.url, transport.oauth)
     : undefined;
 
   // Discover tools and server metadata

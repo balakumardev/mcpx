@@ -2,6 +2,12 @@
 export type TransportType = 'stdio' | 'http' | 'sse';
 export type AuthType = 'oauth';
 
+export interface OAuthConfig {
+  clientId?: string;
+  clientSecret?: string;
+  callbackPort?: number;
+}
+
 export interface StdioTransportConfig {
   type: 'stdio';
   command: string;
@@ -14,6 +20,7 @@ export interface HttpTransportConfig {
   url: string;
   headers?: Record<string, string>;
   auth?: AuthType;
+  oauth?: OAuthConfig;
 }
 
 export interface SseTransportConfig {
@@ -21,6 +28,7 @@ export interface SseTransportConfig {
   url: string;
   headers?: Record<string, string>;
   auth?: AuthType;
+  oauth?: OAuthConfig;
 }
 
 export type TransportConfig = StdioTransportConfig | HttpTransportConfig | SseTransportConfig;

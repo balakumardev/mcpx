@@ -56,7 +56,7 @@ To enable OAuth on an existing server:
         console.log(chalk.blue(`Starting OAuth flow for "${name}"...`));
         console.log(chalk.dim('A browser window will open for authorization.\n'));
 
-        await authenticateIfNeeded(serverUrl);
+        await authenticateIfNeeded(serverUrl, entry.transport.oauth);
         console.log(chalk.green(`✓ Successfully authenticated with "${name}".`));
       } catch (err) {
         console.error(chalk.red(`Error: ${err instanceof Error ? err.message : err}`));
