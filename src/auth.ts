@@ -162,7 +162,7 @@ export class McpkitOAuthProvider implements OAuthClientProvider {
   }
 
   get redirectUrl(): URL {
-    return new URL(`http://127.0.0.1:${this.port}/callback`);
+    return new URL(`http://localhost:${this.port}/callback`);
   }
 
   get clientMetadata(): OAuthClientMetadata {

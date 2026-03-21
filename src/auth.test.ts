@@ -56,7 +56,7 @@ describe('McpkitOAuthProvider', () => {
 
   it('has correct redirect URL', () => {
     const provider = new McpkitOAuthProvider(serverUrl, 8765, {});
-    expect(provider.redirectUrl.toString()).toBe('http://127.0.0.1:8765/callback');
+    expect(provider.redirectUrl.toString()).toBe('http://localhost:8765/callback');
   });
 
   it('invalidateCredentials clears all fields for scope "all"', async () => {
@@ -104,7 +104,7 @@ describe('McpkitOAuthProvider', () => {
 
   it('uses callbackPort in redirect URL', () => {
     const provider = new McpkitOAuthProvider(serverUrl, 3118, {}, { callbackPort: 3118 });
-    expect(provider.redirectUrl.toString()).toBe('http://127.0.0.1:3118/callback');
+    expect(provider.redirectUrl.toString()).toBe('http://localhost:3118/callback');
   });
 
   it('sets token_endpoint_auth_method to client_secret_post when clientSecret is provided', () => {
