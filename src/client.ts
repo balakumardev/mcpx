@@ -7,6 +7,26 @@ import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import type { TransportConfig, ToolInfo, ServerMeta } from './types.js';
 
 /**
+ * Replace $prev.field references in params with values from the previous tool result.
+ * E.g. { "user_id": "$prev.userId" } with prevResult { userId: "abc" } → { "user_id": "abc" }
+ */
+function substituteRefs(
+  params: Record<string, unknown>,
+  prev: Record<string, unknown>,
+): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(params)) {
+    if (typeof value === 'string' && value.startsWith('$prev.')) {
+      const field = value.slice('$prev.'.length);
+      result[key] = prev[field] ?? value;
+    } else {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
+/**
  * Auto-detect transport type from a user-provided input string.
  *
  * - URLs ending with `/sse` → SSE transport
@@ -249,6 +269,37 @@ export async function discoverTools(config: TransportConfig, authProvider?: OAut
 }
 
 /**
+ * Extract a text string from an MCP tool result.
+ * Priority: text content parts → structuredContent → toolResult → non-text content → empty.
+ */
+function extractResultText(result: Record<string, unknown>): string {
+  // Text content parts
+  if ('content' in result && Array.isArray(result.content)) {
+    const texts = (result.content as Array<{ type: string; text?: string }>)
+      .filter((part): part is { type: 'text'; text: string } => part.type === 'text')
+      .map((part) => part.text);
+    if (texts.length > 0) return texts.join('\n');
+  }
+
+  // Structured content (JSON responses)
+  if ('structuredContent' in result && result.structuredContent != null) {
+    return JSON.stringify(result.structuredContent, null, 2);
+  }
+
+  // toolResult-style responses
+  if ('toolResult' in result) {
+    return String(result.toolResult);
+  }
+
+  // Last resort: serialize non-text content (images, resources, etc.)
+  if ('content' in result && Array.isArray(result.content) && result.content.length > 0) {
+    return JSON.stringify(result.content, null, 2);
+  }
+
+  return '';
+}
+
+/**
  * Connect to an MCP server, invoke a tool, extract the text result, then disconnect.
  */
 export async function callTool(
@@ -263,21 +314,47 @@ export async function callTool(
   try {
     await client.connect(transport);
     const result = await client.callTool({ name: toolName, arguments: params });
+    return extractResultText(result as Record<string, unknown>);
+  } finally {
+    await transport.close();
+  }
+}
 
-    // Extract text from content array — only "content" style results have it
-    if ('content' in result && Array.isArray(result.content)) {
-      return result.content
-        .filter((part): part is { type: 'text'; text: string } => part.type === 'text')
-        .map((part) => part.text)
-        .join('\n');
+/**
+ * Connect once, invoke multiple tools sequentially in the same session, then disconnect.
+ * Supports $prev.field substitution: params referencing "$prev.fieldName" are replaced
+ * with the corresponding field from the previous tool's parsed JSON output.
+ * Returns an array of text results, one per call.
+ */
+export async function callToolsChained(
+  config: TransportConfig,
+  calls: Array<{ toolName: string; params: Record<string, unknown> }>,
+  authProvider?: OAuthClientProvider,
+): Promise<string[]> {
+  const client = new Client({ name: 'mcpkit', version: __PKG_VERSION__ });
+  const transport = createTransport(config, authProvider);
+
+  try {
+    await client.connect(transport);
+    const results: string[] = [];
+    let prevResult: Record<string, unknown> = {};
+
+    for (const { toolName, params } of calls) {
+      const resolvedParams = substituteRefs(params, prevResult);
+      const result = await client.callTool({ name: toolName, arguments: resolvedParams });
+      const text = extractResultText(result as Record<string, unknown>);
+
+      // Parse result as JSON for $prev substitution in subsequent calls
+      try {
+        prevResult = JSON.parse(text);
+      } catch {
+        prevResult = { _text: text };
+      }
+
+      results.push(text);
     }
 
-    // Fallback for toolResult-style responses
-    if ('toolResult' in result) {
-      return String(result.toolResult);
-    }
-
-    return '';
+    return results;
   } finally {
     await transport.close();
   }
