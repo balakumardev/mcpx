@@ -285,6 +285,8 @@ export function createInstallCommand(): Command {
     .option('-e, --env <env>', 'Environment variables (KEY=VALUE)', (val: string, prev: string[]) => [...prev, val], [] as string[])
     .option('--header <header>', 'HTTP headers (Key: Value)', (val: string, prev: string[]) => [...prev, val], [] as string[])
     .option('--auth <type>', 'Authentication type (oauth)')
+    .option('--oauth-client-id <id>', 'Pre-registered OAuth client ID (skips dynamic registration)')
+    .option('--oauth-callback-port <port>', 'Fixed port for OAuth callback', parseInt)
     .option('-d, --description <text>', 'Custom skill description for agent routing (overrides auto-generated)')
     .option('--scope <scope>', 'Installation scope', 'global')
     .option('--dry-run', 'Show what would be generated without writing files')
@@ -296,9 +298,11 @@ Examples:
   $ mcpkit install '{"mcpServers":{"gh":{"command":"npx","args":["-y","@modelcontextprotocol/server-github"]}}}'
   $ mcpkit install @modelcontextprotocol/server-github -n github -a claude-code --scope project
 
-OAuth servers:
+OAuth servers (with dynamic client registration):
   $ mcpkit install https://mcp.postman.com/mcp --auth oauth -n postman
-  $ mcpkit install https://mcp.linear.app --auth oauth -n linear`)
+
+OAuth servers (with pre-registered client ID):
+  $ mcpkit install https://mcp.slack.com/mcp --auth oauth --oauth-client-id 1601185624273.8899143856786 --oauth-callback-port 3118 -n slack`)
     .action(async (serverSpec: string, opts) => {
       try {
         if (isJsonInput(serverSpec)) {
@@ -326,6 +330,14 @@ OAuth servers:
           // String format: existing behavior (single server)
           const transport = parseServerInput(serverSpec);
           const name = opts.name || deriveName(serverSpec);
+
+          // Apply OAuth config from CLI flags
+          if (opts.oauthClientId && (transport.type === 'http' || transport.type === 'sse')) {
+            transport.oauth = {
+              clientId: opts.oauthClientId,
+              ...(opts.oauthCallbackPort ? { callbackPort: opts.oauthCallbackPort } : {}),
+            };
+          }
 
           await installServer(name, transport, {
             agent: opts.agent,

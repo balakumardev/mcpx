@@ -11,6 +11,8 @@ export function createEditCommand(): Command {
     .option('--header <Key: Value>', 'Add/update a header (http/sse only)', collect, [])
     .option('--remove-header <KEY>', 'Remove a header (http/sse only)', collect, [])
     .option('--auth <type>', 'Set auth type (oauth or none)')
+    .option('--oauth-client-id <id>', 'Set pre-registered OAuth client ID')
+    .option('--oauth-callback-port <port>', 'Set fixed OAuth callback port', parseInt)
     .option('--description <text>', 'Set server description')
     .option('--name <new-name>', 'Rename the server')
     .addHelpText('after', `
@@ -23,7 +25,10 @@ Examples:
 
 Enable/disable OAuth:
   $ mcpkit edit postman --auth oauth    # Then run: mcpkit auth postman
-  $ mcpkit edit postman --auth none     # Remove OAuth`)
+  $ mcpkit edit postman --auth none     # Remove OAuth
+
+Pre-registered OAuth (servers without dynamic client registration):
+  $ mcpkit edit slack --oauth-client-id 1601185624273.8899143856786 --oauth-callback-port 3118`)
     .action(async (name: string, opts) => {
       try {
         const entry = await getServer(name);
@@ -123,6 +128,25 @@ Enable/disable OAuth:
           } else {
             console.error(chalk.red(`Invalid auth type "${opts.auth}". Use "oauth" or "none".`));
             process.exit(1);
+          }
+        }
+
+        // --oauth-client-id / --oauth-callback-port
+        if (opts.oauthClientId !== undefined || opts.oauthCallbackPort !== undefined) {
+          if (entry.transport.type === 'stdio') {
+            console.warn(chalk.yellow(`Warning: OAuth options are only for http/sse servers. "${name}" uses stdio.`));
+          } else {
+            entry.transport.oauth = entry.transport.oauth || {};
+            if (opts.oauthClientId !== undefined) {
+              entry.transport.oauth.clientId = opts.oauthClientId;
+              console.log(chalk.green(`✓ Set OAuth client ID`));
+              changed = true;
+            }
+            if (opts.oauthCallbackPort !== undefined) {
+              entry.transport.oauth.callbackPort = opts.oauthCallbackPort;
+              console.log(chalk.green(`✓ Set OAuth callback port to ${opts.oauthCallbackPort}`));
+              changed = true;
+            }
           }
         }
 
