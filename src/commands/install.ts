@@ -2,11 +2,18 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import { readFile } from 'node:fs/promises';
 import { parseServerInput, discoverTools } from '../client.js';
-import { addServer } from '../config.js';
-import { getGenerator, detectAgents } from '../generators/index.js';
-import { writeSkillFile } from '../skill-file.js';
+import { addServer, getServer } from '../config.js';
+import {
+  describeAgentSource,
+  loadAgentSettings,
+  resolveInstallAgentSelection,
+  resolveServerAgents,
+  saveAgentSettings,
+} from '../agent-config.js';
+import { detectAgents } from '../generators/index.js';
 import { authenticateIfNeeded } from '../auth.js';
-import type { AgentType, AuthType, OAuthConfig, Scope, ServerEntry, TransportConfig } from '../types.js';
+import { reconcileSkillFiles } from '../skill-sync.js';
+import type { AgentSelectionMode, AgentType, AuthType, OAuthConfig, Scope, ServerEntry, TransportConfig } from '../types.js';
 
 // Derive a short name from server spec
 function deriveName(input: string): string {
@@ -180,13 +187,16 @@ async function installServer(
   name: string,
   transport: TransportConfig,
   opts: {
-    agent: string[];
     env?: string[];
     header?: string[];
     auth?: AuthType;
     description?: string;
     dryRun?: boolean;
     scope: Scope;
+    agents: AgentType[];
+    agentSelectionMode: AgentSelectionMode;
+    agentSource: string;
+    settingsLoaded: Awaited<ReturnType<typeof loadAgentSettings>>;
   },
 ): Promise<void> {
   // Apply env vars for stdio (only from CLI flags; JSON env is already in transport)
@@ -232,32 +242,26 @@ async function installServer(
   }
   console.log();
 
-  // Determine target agents
-  let agents: AgentType[] = opts.agent.length > 0
-    ? opts.agent as AgentType[]
-    : detectAgents();
+  const agents = opts.agents;
+  console.log(chalk.dim(`Using agents from ${opts.agentSource}: ${agents.join(', ')}`));
+  console.log();
 
-  if (agents.length === 0) {
-    agents = ['claude-code']; // Default fallback
-  }
-
-  // Generate skill files
   const scope: Scope = opts.scope || 'global';
   const ctx = { serverName: name, tools, transport, description: opts.description, serverMeta, scope };
+  const existingEntry = await getServer(name);
+  const previousAgents = existingEntry
+    ? Array.from(new Set([
+      ...existingEntry.agents,
+      ...resolveServerAgents(existingEntry, opts.settingsLoaded).agents,
+    ]))
+    : [];
 
-  for (const agent of agents) {
-    const generate = await getGenerator(agent);
-    const skill = generate(ctx);
-
-    if (opts.dryRun) {
-      console.log(chalk.yellow(`[dry-run] ${agent}: ${skill.filePath}`));
-      console.log(chalk.dim(skill.content.slice(0, 200) + '...'));
-      console.log();
-    } else {
-      await writeSkillFile(skill.filePath, skill.content);
-      console.log(chalk.green(`✓ ${agent}: ${skill.filePath}`));
-    }
-  }
+  await reconcileSkillFiles({
+    ctx,
+    nextAgents: agents,
+    previousAgents,
+    dryRun: opts.dryRun,
+  });
 
   // Save to registry
   if (!opts.dryRun) {
@@ -268,6 +272,7 @@ async function installServer(
       ...(opts.description ? { description: opts.description } : {}),
       toolCount: tools.length,
       agents,
+      agentSelectionMode: opts.agentSelectionMode,
       createdAt: now,
       updatedAt: now,
     };
@@ -281,9 +286,11 @@ export function createInstallCommand(): Command {
     .description('Install MCP server tools as agent skills')
     .argument('<server-spec>', 'Server command, npm package, URL, JSON string, or .json file path')
     .option('-n, --name <name>', 'Custom name for the server')
-    .option('-a, --agent <agent>', 'Target agent(s)', (val: string, prev: string[]) => [...prev, val], [] as string[])
-    .option('-e, --env <env>', 'Environment variables (KEY=VALUE)', (val: string, prev: string[]) => [...prev, val], [] as string[])
-    .option('--header <header>', 'HTTP headers (Key: Value)', (val: string, prev: string[]) => [...prev, val], [] as string[])
+    .option('-a, --agent <agent>', 'Target agent(s)', collect, [] as string[])
+    .option('--exclude-agent <agent>', 'Skip specific agent(s)', collect, [] as string[])
+    .option('--interactive', 'Interactively configure default agents before installing')
+    .option('-e, --env <env>', 'Environment variables (KEY=VALUE)', collect, [] as string[])
+    .option('--header <header>', 'HTTP headers (Key: Value)', collect, [] as string[])
     .option('--auth <type>', 'Authentication type (oauth)')
     .option('--oauth-client-id <id>', 'Pre-registered OAuth client ID (skips dynamic registration)')
     .option('--oauth-callback-port <port>', 'Fixed port for OAuth callback', parseInt)
@@ -305,6 +312,24 @@ OAuth servers (with pre-registered client ID):
   $ mcpkit install https://mcp.slack.com/mcp --auth oauth --oauth-client-id 1601185624273.8899143856786 --oauth-callback-port 3118 -n slack`)
     .action(async (serverSpec: string, opts) => {
       try {
+        const detectedAgents = detectAgents();
+        const settings = await loadAgentSettings();
+        const agentSelection = await resolveInstallAgentSelection({
+          includeAgents: opts.agent,
+          excludeAgents: opts.excludeAgent,
+          interactive: opts.interactive,
+          detectedAgents,
+          settings,
+        });
+
+        if (agentSelection.settingsToSave && !opts.dryRun) {
+          await saveAgentSettings(agentSelection.settingsToSave);
+          console.log(chalk.green(`✓ Saved default agents: ${agentSelection.settingsToSave.enabledAgents.join(', ')}`));
+          console.log();
+        }
+
+        const agentSource = describeAgentSource(agentSelection.source);
+
         if (isJsonInput(serverSpec)) {
           // JSON format: parse into one or more servers
           const servers = await parseJsonInput(serverSpec, opts.name);
@@ -317,13 +342,16 @@ OAuth servers (with pre-registered client ID):
 
           for (const server of servers) {
             await installServer(server.name, server.transport, {
-              agent: opts.agent,
               env: opts.env,
               header: opts.header,
               auth: opts.auth,
               description: opts.description,
               dryRun: opts.dryRun,
               scope: opts.scope || 'global',
+              agents: agentSelection.agents,
+              agentSelectionMode: agentSelection.selectionMode,
+              agentSource,
+              settingsLoaded: agentSelection.settingsToSave ?? settings,
             });
           }
         } else {
@@ -340,13 +368,16 @@ OAuth servers (with pre-registered client ID):
           }
 
           await installServer(name, transport, {
-            agent: opts.agent,
             env: opts.env,
             header: opts.header,
             auth: opts.auth,
             description: opts.description,
             dryRun: opts.dryRun,
             scope: opts.scope || 'global',
+            agents: agentSelection.agents,
+            agentSelectionMode: agentSelection.selectionMode,
+            agentSource,
+            settingsLoaded: agentSelection.settingsToSave ?? settings,
           });
         }
       } catch (err) {
@@ -354,4 +385,8 @@ OAuth servers (with pre-registered client ID):
         process.exit(1);
       }
     });
+}
+
+function collect(value: string, previous: string[]): string[] {
+  return previous.concat([value]);
 }

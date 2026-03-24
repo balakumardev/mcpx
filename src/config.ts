@@ -3,7 +3,10 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import chalk from 'chalk';
-import type { ServerEntry, ServerRegistry } from './types.js';
+import type { AgentSelectionMode, AgentType, ServerEntry, ServerRegistry } from './types.js';
+
+const VALID_AGENT_SELECTION_MODES: AgentSelectionMode[] = ['defaults', 'explicit'];
+const VALID_AGENTS: AgentType[] = ['claude-code', 'cursor', 'codex', 'windsurf', 'augment'];
 
 const DEFAULT_REGISTRY: ServerRegistry = { version: 1, servers: {} };
 const VALID_TRANSPORT_TYPES = ['stdio', 'http', 'sse'];
@@ -57,6 +60,13 @@ function validateServerEntry(name: string, entry: unknown): string | null {
   // agents
   if (e.agents !== undefined && !Array.isArray(e.agents)) {
     return '"agents" must be an array';
+  }
+  if (Array.isArray(e.agents) && e.agents.some(agent => !VALID_AGENTS.includes(agent as AgentType))) {
+    return `"agents" contains unsupported values (expected: ${VALID_AGENTS.join(', ')})`;
+  }
+
+  if (e.agentSelectionMode !== undefined && !VALID_AGENT_SELECTION_MODES.includes(e.agentSelectionMode as AgentSelectionMode)) {
+    return `"agentSelectionMode" must be one of: ${VALID_AGENT_SELECTION_MODES.join(', ')}`;
   }
 
   return null;

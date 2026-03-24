@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { parse } from 'yaml';
 import { stringify } from 'yaml';
 import { getServer, getRegistryPath } from '../config.js';
+import { loadAgentSettings, resolveServerAgents } from '../agent-config.js';
 
 export function createViewCommand(): Command {
   return new Command('view')
@@ -21,6 +22,8 @@ Examples:
           console.error(chalk.red(`Server "${name}" not found.`));
           process.exit(1);
         }
+        const settings = await loadAgentSettings();
+        const resolved = resolveServerAgents(entry, settings);
 
         if (opts.yaml) {
           const content = await readFile(getRegistryPath(), 'utf-8');
@@ -70,7 +73,8 @@ Examples:
         // Metadata
         console.log(chalk.blue('\nMetadata'));
         console.log(`  Tools:   ${entry.toolCount}`);
-        console.log(`  Agents:  ${entry.agents.join(', ')}`);
+        console.log(`  Agents:  ${resolved.agents.join(', ')}`);
+        console.log(`  Mode:    ${resolved.selectionMode}`);
         console.log(`  Created: ${entry.createdAt}`);
         console.log(`  Updated: ${entry.updatedAt}`);
         console.log();

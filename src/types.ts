@@ -40,6 +40,7 @@ export interface ServerEntry {
   description?: string;
   toolCount: number;
   agents: AgentType[];
+  agentSelectionMode?: AgentSelectionMode;
   createdAt: string;
   updatedAt: string;
 }
@@ -61,7 +62,15 @@ export type AgentType = 'claude-code' | 'cursor' | 'codex' | 'windsurf' | 'augme
 
 export const ALL_AGENTS: AgentType[] = ['claude-code', 'cursor', 'codex', 'windsurf', 'augment'];
 
+export type AgentSelectionMode = 'defaults' | 'explicit';
+
 export type Scope = 'global' | 'project';
+
+export interface AgentSettings {
+  version: 1;
+  enabledAgents: AgentType[];
+  updatedAt: string;
+}
 
 // Server metadata from MCP initialize + npm registry
 export interface ServerMeta {

@@ -3,23 +3,26 @@ import chalk from 'chalk';
 import { existsSync } from 'node:fs';
 import { getServer, listServers, addServer } from '../config.js';
 import { discoverTools } from '../client.js';
-import { getGenerator, detectAgents } from '../generators/index.js';
-import { writeSkillFile } from '../skill-file.js';
+import { loadAgentSettings, resolveServerAgents } from '../agent-config.js';
+import { getGenerator } from '../generators/index.js';
+import { reconcileSkillFiles } from '../skill-sync.js';
 import type { AgentType, ServerEntry } from '../types.js';
 
-async function hasSkillFiles(entry: ServerEntry): Promise<boolean> {
+async function hasSkillFiles(entry: ServerEntry, agents: AgentType[]): Promise<boolean> {
   const ctx = { serverName: entry.name, tools: [], transport: entry.transport, scope: 'global' as const };
-  for (const agent of entry.agents) {
+  for (const agent of agents) {
     const generate = await getGenerator(agent);
     const skill = generate(ctx);
-    if (!existsSync(skill.filePath)) return false;
+    if (!existsSync(skill.filePath)) {
+      return false;
+    }
   }
   return true;
 }
 
 export function createSyncCommand(): Command {
   return new Command('sync')
-    .description('Sync registry — generate missing skill files and re-detect agents')
+    .description('Sync registry — generate missing skill files using saved agent preferences')
     .argument('[name]', 'Server name (omit to sync all)')
     .option('--force', 'Regenerate skill files even if they already exist')
     .option('--dry-run', 'Show what would be synced without writing files')
@@ -31,6 +34,7 @@ Examples:
   $ mcpkit sync --dry-run        Preview what would be synced`)
     .action(async (name?: string, opts?: { force?: boolean; dryRun?: boolean }) => {
       try {
+        const settings = await loadAgentSettings();
         const servers = name
           ? [await getServer(name)].filter(Boolean) as ServerEntry[]
           : await listServers();
@@ -45,8 +49,13 @@ Examples:
 
         for (const entry of servers) {
           try {
+            const resolved = resolveServerAgents(entry, settings);
+
             // Check if skill files already exist
-            if (!opts?.force && entry.agents.length > 0 && await hasSkillFiles(entry)) {
+            const sameAgents = entry.agents.length === resolved.agents.length
+              && entry.agents.every((agent, index) => agent === resolved.agents[index]);
+
+            if (!opts?.force && sameAgents && await hasSkillFiles(entry, resolved.agents)) {
               console.log(chalk.dim(`  ⏭ ${entry.name} — skill files exist (use --force to regenerate)`));
               skipped++;
               continue;
@@ -57,29 +66,20 @@ Examples:
             // Connect and discover tools
             const { tools, serverMeta } = await discoverTools(entry.transport);
             console.log(`  Found ${tools.length} tool(s)`);
-
-            // Re-detect agents (picks up newly installed agents)
-            let agents = detectAgents();
-            if (agents.length === 0) agents = ['claude-code'] as AgentType[];
-
             const ctx = { serverName: entry.name, tools, transport: entry.transport, description: entry.description, serverMeta, scope: 'global' as const };
-
-            for (const agent of agents) {
-              const generate = await getGenerator(agent);
-              const skill = generate(ctx);
-
-              if (opts?.dryRun) {
-                console.log(chalk.yellow(`  [dry-run] ${agent}: ${skill.filePath}`));
-              } else {
-                await writeSkillFile(skill.filePath, skill.content);
-                console.log(chalk.green(`  ✓ ${agent}: ${skill.filePath}`));
-              }
-            }
+            await reconcileSkillFiles({
+              ctx,
+              nextAgents: resolved.agents,
+              previousAgents: entry.agents,
+              dryRun: opts?.dryRun,
+              logPrefix: '  ',
+            });
 
             // Update registry entry
             if (!opts?.dryRun) {
               entry.toolCount = tools.length;
-              entry.agents = agents;
+              entry.agents = resolved.agents;
+              entry.agentSelectionMode = resolved.selectionMode;
               entry.updatedAt = new Date().toISOString();
               await addServer(entry);
             }

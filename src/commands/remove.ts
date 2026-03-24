@@ -1,9 +1,9 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
-import { rm } from 'node:fs/promises';
-import { dirname } from 'node:path';
 import { getServer, removeServer, addServer } from '../config.js';
 import { getGenerator } from '../generators/index.js';
+import { loadAgentSettings, normalizeAgentList, resolveServerAgents } from '../agent-config.js';
+import { removeSkillDirectory } from '../skill-file.js';
 import type { AgentType } from '../types.js';
 
 export function createRemoveCommand(): Command {
@@ -23,7 +23,13 @@ Examples:
           process.exit(1);
         }
 
-        const agentsToRemove: AgentType[] = opts.agent ? [opts.agent] : entry.agents;
+        const settings = await loadAgentSettings();
+        const resolved = resolveServerAgents(entry, settings);
+        const trackedAgents = Array.from(new Set([...entry.agents, ...resolved.agents]));
+        const requestedAgents: AgentType[] = opts.agent
+          ? normalizeAgentList([opts.agent], 'agent')
+          : trackedAgents;
+        const agentsToRemove: AgentType[] = requestedAgents.filter(agent => trackedAgents.includes(agent));
         const ctx = { serverName: name, tools: [], transport: entry.transport, scope: 'global' as const };
 
         for (const agent of agentsToRemove) {
@@ -32,8 +38,8 @@ Examples:
 
           try {
             // All generators now use SKILL.md in a skill directory — remove the directory
-            await rm(dirname(skill.filePath), { recursive: true, force: true });
-            console.log(chalk.green(`✓ Removed ${agent} skill: ${dirname(skill.filePath)}`));
+            await removeSkillDirectory(skill.filePath);
+            console.log(chalk.green(`✓ Removed ${agent} skill: ${skill.filePath}`));
           } catch {
             console.log(chalk.dim(`  ${agent}: nothing to remove`));
           }
@@ -43,11 +49,14 @@ Examples:
           await removeServer(name);
           console.log(chalk.green(`✓ Server "${name}" removed from registry`));
         } else {
-          entry.agents = entry.agents.filter(a => a !== opts.agent);
+          const nextAgents = resolved.agents.filter(a => a !== opts.agent);
+          entry.agentSelectionMode = 'explicit';
+          entry.agents = nextAgents;
           if (entry.agents.length === 0) {
             await removeServer(name);
             console.log(chalk.green(`✓ Server "${name}" removed from registry (no agents left)`));
           } else {
+            entry.updatedAt = new Date().toISOString();
             await addServer(entry);
             console.log(chalk.green(`✓ Removed ${opts.agent} skill for "${name}"`));
           }

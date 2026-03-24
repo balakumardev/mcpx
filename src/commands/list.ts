@@ -2,6 +2,7 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import { listServers, getServer } from '../config.js';
 import { discoverTools } from '../client.js';
+import { loadAgentSettings, resolveServerAgents } from '../agent-config.js';
 
 export function createListCommand(): Command {
   return new Command('list')
@@ -31,6 +32,7 @@ Examples:
           }
         } else {
           // Show all registered servers
+          const settings = await loadAgentSettings();
           const servers = await listServers();
           if (servers.length === 0) {
             console.log(chalk.yellow('No servers registered. Run `mcpkit install <server>` to add one.'));
@@ -40,11 +42,12 @@ Examples:
           console.log(chalk.bold(`\nRegistered servers (${servers.length}):\n`));
 
           for (const s of servers) {
+            const resolved = resolveServerAgents(s, settings);
             const transport = s.transport.type === 'stdio'
               ? `${s.transport.command} ${s.transport.args.join(' ')}`.trim()
               : s.transport.url;
             console.log(`  ${chalk.bold(s.name)} (${s.transport.type})`);
-            console.log(`    Tools: ${s.toolCount} | Agents: ${s.agents.join(', ')}`);
+            console.log(`    Tools: ${s.toolCount} | Agents: ${resolved.agents.join(', ')} (${resolved.selectionMode})`);
             console.log(`    ${chalk.dim(transport)}`);
             console.log();
           }

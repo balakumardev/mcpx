@@ -2,9 +2,9 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import { getServer, listServers, addServer } from '../config.js';
 import { discoverTools } from '../client.js';
-import { getGenerator } from '../generators/index.js';
-import { writeSkillFile } from '../skill-file.js';
 import { authenticateIfNeeded } from '../auth.js';
+import { loadAgentSettings, resolveServerAgents } from '../agent-config.js';
+import { reconcileSkillFiles } from '../skill-sync.js';
 
 export function createUpdateCommand(): Command {
   return new Command('update')
@@ -16,6 +16,7 @@ Examples:
   $ mcpkit update github         Update a specific server`)
     .action(async (name?: string) => {
       try {
+        const settings = await loadAgentSettings();
         const servers = name ? [await getServer(name)].filter(Boolean) : await listServers();
 
         if (servers.length === 0) {
@@ -34,17 +35,19 @@ Examples:
 
           const { tools, serverMeta } = await discoverTools(entry.transport, authProvider);
           console.log(`  Found ${tools.length} tool(s)`);
+          const resolved = resolveServerAgents(entry, settings);
 
           const ctx = { serverName: entry.name, tools, transport: entry.transport, description: entry.description, serverMeta, scope: 'global' as const };
-
-          for (const agent of entry.agents) {
-            const generate = await getGenerator(agent);
-            const skill = generate(ctx);
-            await writeSkillFile(skill.filePath, skill.content);
-            console.log(chalk.green(`  ✓ ${agent}: ${skill.filePath}`));
-          }
+          await reconcileSkillFiles({
+            ctx,
+            nextAgents: resolved.agents,
+            previousAgents: entry.agents,
+            logPrefix: '  ',
+          });
 
           entry.toolCount = tools.length;
+          entry.agents = resolved.agents;
+          entry.agentSelectionMode = resolved.selectionMode;
           entry.updatedAt = new Date().toISOString();
           await addServer(entry);
         }
