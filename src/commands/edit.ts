@@ -1,6 +1,11 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { getServer, addServer, removeServer } from '../config.js';
+import { loadAgentSettings, normalizeAgentList, resolveServerAgents } from '../agent-config.js';
+import { getGenerator } from '../generators/index.js';
+import { removeSkillDirectory } from '../skill-file.js';
+import { ALL_AGENTS } from '../types.js';
+import type { AgentType } from '../types.js';
 
 export function createEditCommand(): Command {
   return new Command('edit')
@@ -10,6 +15,9 @@ export function createEditCommand(): Command {
     .option('--remove-env <KEY>', 'Remove an env var (stdio only)', collect, [])
     .option('--header <Key: Value>', 'Add/update a header (http/sse only)', collect, [])
     .option('--remove-header <KEY>', 'Remove a header (http/sse only)', collect, [])
+    .option('--add-agent <agent>', `Add an agent (${ALL_AGENTS.join(', ')})`, collect, [])
+    .option('--remove-agent <agent>', `Remove an agent (${ALL_AGENTS.join(', ')})`, collect, [])
+    .option('--use-defaults', 'Use global default agents instead of explicit list')
     .option('--auth <type>', 'Set auth type (oauth or none)')
     .option('--oauth-client-id <id>', 'Set pre-registered OAuth client ID')
     .option('--oauth-callback-port <port>', 'Set fixed OAuth callback port', parseInt)
@@ -22,6 +30,11 @@ Examples:
   $ mcpkit edit myapi --header "Authorization: Bearer tok_xxx"
   $ mcpkit edit myapi --description "My custom API server"
   $ mcpkit edit github --name gh
+
+Add/remove agents:
+  $ mcpkit edit obsidian-search --add-agent claude-code
+  $ mcpkit edit obsidian-search --remove-agent codex
+  $ mcpkit edit obsidian-search --use-defaults
 
 Enable/disable OAuth:
   $ mcpkit edit postman --auth oauth    # Then run: mcpkit auth postman
@@ -38,6 +51,83 @@ Pre-registered OAuth (servers without dynamic client registration):
         }
 
         let changed = false;
+        let currentAgents: AgentType[] = entry.agents;
+        let trackedAgents = new Set(entry.agents);
+
+        if (
+          (opts.addAgent && (opts.addAgent as string[]).length > 0)
+          || (opts.removeAgent && (opts.removeAgent as string[]).length > 0)
+        ) {
+          const settings = await loadAgentSettings();
+          const resolved = resolveServerAgents(entry, settings);
+          currentAgents = resolved.agents;
+          trackedAgents = new Set([...entry.agents, ...resolved.agents]);
+        }
+
+        // --add-agent
+        if (opts.addAgent && (opts.addAgent as string[]).length > 0) {
+          const agentsToAdd = normalizeAgentList(opts.addAgent as string[], 'agent');
+          const currentAgentSet = new Set(currentAgents);
+          for (const agent of agentsToAdd) {
+            if (currentAgentSet.has(agent)) {
+              console.log(chalk.yellow(`Agent "${agent}" already exists for "${name}".`));
+            } else {
+              currentAgentSet.add(agent);
+              trackedAgents.add(agent);
+              console.log(chalk.green(`✓ Added agent ${agent}`));
+              changed = true;
+            }
+          }
+          currentAgents = Array.from(currentAgentSet);
+          entry.agents = currentAgents;
+          entry.agentSelectionMode = 'explicit';
+        }
+
+        // --remove-agent
+        if (opts.removeAgent && (opts.removeAgent as string[]).length > 0) {
+          const agentsToRemove = normalizeAgentList(opts.removeAgent as string[], 'agent');
+          const agentsToRemoveSet = new Set(agentsToRemove);
+          const matchingAgents = agentsToRemove.filter(agent => trackedAgents.has(agent));
+
+          if (matchingAgents.length > 0) {
+            const ctx = {
+              serverName: name,
+              tools: [],
+              transport: entry.transport,
+              description: entry.description,
+              scope: 'global' as const,
+            };
+
+            for (const agent of matchingAgents) {
+              const generate = await getGenerator(agent);
+              const skill = generate(ctx);
+
+              try {
+                await removeSkillDirectory(skill.filePath);
+              } catch {
+                // Ignore missing skill directories so registry edits can still proceed.
+              }
+            }
+
+            currentAgents = currentAgents.filter(agent => !agentsToRemoveSet.has(agent));
+            entry.agents = currentAgents;
+            entry.agentSelectionMode = 'explicit';
+            console.log(chalk.green(`✓ Removed ${matchingAgents.length} agent(s)`));
+            changed = true;
+          } else {
+            console.log(chalk.yellow('No matching agents to remove.'));
+          }
+          if (currentAgents.length === 0) {
+            console.warn(chalk.yellow('Warning: No agents remaining. Will use fallback on next sync.'));
+          }
+        }
+
+        // --use-defaults
+        if (opts.useDefaults) {
+          entry.agentSelectionMode = 'defaults';
+          console.log(chalk.green(`✓ Set to use global default agents`));
+          changed = true;
+        }
 
         // --env KEY=VALUE
         for (const pair of opts.env as string[]) {

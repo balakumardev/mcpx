@@ -15,6 +15,7 @@ interface ServerCredentials {
   clientInfo?: OAuthClientInformationMixed;
   tokens?: OAuthTokens;
   codeVerifier?: string;
+  callbackPort?: number;
 }
 
 type CredentialStore = Record<string, ServerCredentials>;
@@ -143,6 +144,16 @@ async function findAvailablePort(): Promise<number> {
   });
 }
 
+async function isPortAvailable(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const server = createServer();
+    server.listen(port, '127.0.0.1', () => {
+      server.close(() => resolve(true));
+    });
+    server.on('error', () => resolve(false));
+  });
+}
+
 // --- OAuth Provider ---
 
 export class McpkitOAuthProvider implements OAuthClientProvider {
@@ -191,6 +202,7 @@ export class McpkitOAuthProvider implements OAuthClientProvider {
 
   async saveClientInformation(info: OAuthClientInformationMixed): Promise<void> {
     this.credentials.clientInfo = info;
+    this.credentials.callbackPort = this.port;
     this.store[this.serverUrl] = this.credentials;
     await saveCredentials(this.store);
   }
@@ -254,7 +266,23 @@ export class McpkitOAuthProvider implements OAuthClientProvider {
 
 export async function createOAuthProvider(serverUrl: string, oauthConfig?: OAuthConfig): Promise<McpkitOAuthProvider> {
   const store = await loadCredentials();
-  const port = oauthConfig?.callbackPort ?? await findAvailablePort();
+  // Reuse the port from a previous registration if available, so the redirect_uri
+  // matches what was registered with the OAuth server during dynamic client registration.
+  let port = oauthConfig?.callbackPort;
+  if (!port) {
+    const existingPort = store[serverUrl]?.callbackPort;
+    if (existingPort && await isPortAvailable(existingPort)) {
+      port = existingPort;
+    } else {
+      // Port unavailable or no previous port — pick a new one and clear stale client registration
+      if (existingPort) {
+        delete store[serverUrl]?.clientInfo;
+        delete store[serverUrl]?.callbackPort;
+        await saveCredentials(store);
+      }
+      port = await findAvailablePort();
+    }
+  }
   return new McpkitOAuthProvider(serverUrl, port, store, oauthConfig);
 }
 
