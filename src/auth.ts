@@ -16,6 +16,7 @@ interface ServerCredentials {
   tokens?: OAuthTokens;
   codeVerifier?: string;
   callbackPort?: number;
+  tokenIssuedAt?: number;
 }
 
 type CredentialStore = Record<string, ServerCredentials>;
@@ -48,7 +49,17 @@ export async function clearCredentials(serverUrl: string): Promise<void> {
 
 export async function hasValidTokens(serverUrl: string): Promise<boolean> {
   const store = await loadCredentials();
-  return !!store[serverUrl]?.tokens?.access_token;
+  const creds = store[serverUrl];
+  if (!creds?.tokens?.access_token) return false;
+  return !isTokenExpired(creds);
+}
+
+const TOKEN_EXPIRY_BUFFER_MS = 5 * 60 * 1000; // 5 minutes
+
+function isTokenExpired(creds: ServerCredentials): boolean {
+  if (!creds.tokenIssuedAt || !creds.tokens?.expires_in) return true;
+  const expiresAt = creds.tokenIssuedAt + creds.tokens.expires_in * 1000;
+  return Date.now() >= expiresAt - TOKEN_EXPIRY_BUFFER_MS;
 }
 
 // --- Browser launch ---
@@ -213,8 +224,14 @@ export class McpkitOAuthProvider implements OAuthClientProvider {
 
   async saveTokens(tokens: OAuthTokens): Promise<void> {
     this.credentials.tokens = tokens;
+    this.credentials.tokenIssuedAt = Date.now();
     this.store[this.serverUrl] = this.credentials;
     await saveCredentials(this.store);
+  }
+
+  hasValidTokens(): boolean {
+    if (!this.credentials.tokens?.access_token) return false;
+    return !isTokenExpired(this.credentials);
   }
 
   codeVerifier(): string {
@@ -252,6 +269,7 @@ export class McpkitOAuthProvider implements OAuthClientProvider {
         break;
       case 'tokens':
         delete this.credentials.tokens;
+        delete this.credentials.tokenIssuedAt;
         break;
       case 'verifier':
         delete this.credentials.codeVerifier;
@@ -288,6 +306,11 @@ export async function createOAuthProvider(serverUrl: string, oauthConfig?: OAuth
 
 export async function authenticateIfNeeded(serverUrl: string, oauthConfig?: OAuthConfig): Promise<McpkitOAuthProvider> {
   const provider = await createOAuthProvider(serverUrl, oauthConfig);
+
+  // Skip the full OAuth dance if the access token is still valid
+  if (provider.hasValidTokens()) {
+    return provider;
+  }
 
   const result = await auth(provider, { serverUrl });
 

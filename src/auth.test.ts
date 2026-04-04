@@ -119,4 +119,82 @@ describe('McpkitOAuthProvider', () => {
     const provider = new McpkitOAuthProvider(serverUrl, 9999, {}, { clientId: 'my-client' });
     expect(provider.clientMetadata.token_endpoint_auth_method).toBe('none');
   });
+
+  // --- Token expiry tests ---
+
+  it('hasValidTokens returns false when no tokens', () => {
+    const provider = new McpkitOAuthProvider(serverUrl, 9999, {});
+    expect(provider.hasValidTokens()).toBe(false);
+  });
+
+  it('hasValidTokens returns false when tokens exist but no tokenIssuedAt', () => {
+    const store: Record<string, any> = {};
+    store[serverUrl] = {
+      tokens: { access_token: 'at_123', token_type: 'bearer', expires_in: 43200 },
+    };
+    const provider = new McpkitOAuthProvider(serverUrl, 9999, store);
+    expect(provider.hasValidTokens()).toBe(false);
+  });
+
+  it('hasValidTokens returns true when token is fresh', () => {
+    const store: Record<string, any> = {};
+    store[serverUrl] = {
+      tokens: { access_token: 'at_123', token_type: 'bearer', expires_in: 43200 },
+      tokenIssuedAt: Date.now(),
+    };
+    const provider = new McpkitOAuthProvider(serverUrl, 9999, store);
+    expect(provider.hasValidTokens()).toBe(true);
+  });
+
+  it('hasValidTokens returns false when token is expired', () => {
+    const store: Record<string, any> = {};
+    store[serverUrl] = {
+      tokens: { access_token: 'at_123', token_type: 'bearer', expires_in: 3600 },
+      tokenIssuedAt: Date.now() - 4000 * 1000, // issued 4000s ago, expires_in is 3600s
+    };
+    const provider = new McpkitOAuthProvider(serverUrl, 9999, store);
+    expect(provider.hasValidTokens()).toBe(false);
+  });
+
+  it('hasValidTokens returns false within 5-minute buffer before expiry', () => {
+    const store: Record<string, any> = {};
+    store[serverUrl] = {
+      tokens: { access_token: 'at_123', token_type: 'bearer', expires_in: 3600 },
+      // issued 56 minutes ago — 4 minutes left, within 5-minute buffer
+      tokenIssuedAt: Date.now() - 56 * 60 * 1000,
+    };
+    const provider = new McpkitOAuthProvider(serverUrl, 9999, store);
+    expect(provider.hasValidTokens()).toBe(false);
+  });
+
+  it('saveTokens sets tokenIssuedAt', async () => {
+    const store: Record<string, any> = {};
+    store[serverUrl] = {};
+    const provider = new McpkitOAuthProvider(serverUrl, 9999, store);
+    const before = Date.now();
+    try {
+      await provider.saveTokens({ access_token: 'new', token_type: 'bearer', expires_in: 3600 });
+    } catch {
+      // disk write may fail in CI
+    }
+    const after = Date.now();
+    expect(store[serverUrl].tokenIssuedAt).toBeGreaterThanOrEqual(before);
+    expect(store[serverUrl].tokenIssuedAt).toBeLessThanOrEqual(after);
+  });
+
+  it('invalidateCredentials tokens clears tokenIssuedAt', async () => {
+    const store: Record<string, any> = {};
+    store[serverUrl] = {
+      tokens: { access_token: 'at_123', token_type: 'bearer' },
+      tokenIssuedAt: Date.now(),
+    };
+    const provider = new McpkitOAuthProvider(serverUrl, 9999, store);
+    try {
+      await provider.invalidateCredentials('tokens');
+    } catch {
+      // disk write may fail in CI
+    }
+    expect(provider.tokens()).toBeUndefined();
+    expect(provider.hasValidTokens()).toBe(false);
+  });
 });
