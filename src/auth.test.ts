@@ -127,13 +127,13 @@ describe('McpkitOAuthProvider', () => {
     expect(provider.hasValidTokens()).toBe(false);
   });
 
-  it('hasValidTokens returns false when tokens exist but no tokenIssuedAt', () => {
+  it('hasValidTokens returns true when tokens exist but no tokenIssuedAt (legacy tokens)', () => {
     const store: Record<string, any> = {};
     store[serverUrl] = {
       tokens: { access_token: 'at_123', token_type: 'bearer', expires_in: 43200 },
     };
     const provider = new McpkitOAuthProvider(serverUrl, 9999, store);
-    expect(provider.hasValidTokens()).toBe(false);
+    expect(provider.hasValidTokens()).toBe(true);
   });
 
   it('hasValidTokens returns true when token is fresh', () => {

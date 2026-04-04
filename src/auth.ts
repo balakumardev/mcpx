@@ -57,7 +57,9 @@ export async function hasValidTokens(serverUrl: string): Promise<boolean> {
 const TOKEN_EXPIRY_BUFFER_MS = 5 * 60 * 1000; // 5 minutes
 
 function isTokenExpired(creds: ServerCredentials): boolean {
-  if (!creds.tokenIssuedAt || !creds.tokens?.expires_in) return true;
+  // If we don't have expiry info (legacy tokens saved before tokenIssuedAt was tracked),
+  // assume valid and let the server reject if expired — avoids forcing re-auth
+  if (!creds.tokenIssuedAt || !creds.tokens?.expires_in) return false;
   const expiresAt = creds.tokenIssuedAt + creds.tokens.expires_in * 1000;
   return Date.now() >= expiresAt - TOKEN_EXPIRY_BUFFER_MS;
 }
