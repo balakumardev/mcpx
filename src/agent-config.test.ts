@@ -40,6 +40,14 @@ describe('agent-config', () => {
     await expect(loadAgentSettings()).resolves.toEqual(settings);
   });
 
+  it('accepts openclaw in saved default agents', async () => {
+    const settings = createAgentSettings(['openclaw'], '2026-03-24T00:00:00.000Z');
+
+    await saveAgentSettings(settings);
+
+    await expect(loadAgentSettings()).resolves.toEqual(settings);
+  });
+
   it('ignores invalid settings files', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     await mkdir(join(homeDir, '.mcpkit'), { recursive: true });
@@ -173,5 +181,9 @@ describe('agent-config', () => {
 
   it('parses agent selection input by index and name', () => {
     expect(parseAgentSelectionInput('2 codex', ['claude-code'])).toEqual(['cursor', 'codex']);
+  });
+
+  it('parses openclaw by name', () => {
+    expect(parseAgentSelectionInput('openclaw', ['claude-code'])).toEqual(['openclaw']);
   });
 });

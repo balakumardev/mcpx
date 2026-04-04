@@ -175,6 +175,7 @@ export async function getGenerator(agent: AgentType): Promise<(ctx: GeneratorCon
     case 'codex': return (await import('./codex.js')).generate;
     case 'windsurf': return (await import('./windsurf.js')).generate;
     case 'augment': return (await import('./augment.js')).generate;
+    case 'openclaw': return (await import('./openclaw.js')).generate;
   }
 }
 
@@ -188,6 +189,7 @@ export function detectAgents(): AgentType[] {
   if (existsSync(join(home, '.codex')) || existsSync(join(home, '.agents'))) agents.push('codex');
   if (existsSync(join(process.cwd(), '.windsurf')) || existsSync(join(home, '.codeium'))) agents.push('windsurf');
   if (existsSync(join(home, '.augment')) || existsSync(join(process.cwd(), '.augment'))) agents.push('augment');
+  if (existsSync(join(home, '.openclaw'))) agents.push('openclaw');
 
   return agents;
 }

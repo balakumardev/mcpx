@@ -2,7 +2,7 @@
 
 MCP client that turns any MCP server into CLI commands + lightweight agent skills — zero context bloat.
 
-**Supported agents:** Claude Code, Cursor, Windsurf, Augment Code, OpenAI Codex CLI
+**Supported agents:** Claude Code, Cursor, Windsurf, Augment Code, OpenAI Codex CLI, OpenClaw
 
 ## Why
 
@@ -235,6 +235,7 @@ All agents use the [agentskills.io](https://agentskills.io) open standard — a 
 | Windsurf | `~/.codeium/windsurf/skills/mcpkit-<name>/SKILL.md` | `.windsurf/skills/mcpkit-<name>/SKILL.md` |
 | Augment | `~/.augment/skills/mcpkit-<name>/SKILL.md` | `.augment/skills/mcpkit-<name>/SKILL.md` |
 | Codex CLI | `~/.codex/skills/mcpkit-<name>/SKILL.md` | `.agents/skills/mcpkit-<name>/SKILL.md` |
+| OpenClaw | `~/.openclaw/skills/mcpkit-<name>/SKILL.md` | `skills/mcpkit-<name>/SKILL.md` |
 
 ## Why not just use tool search?
 
@@ -263,7 +264,7 @@ mcpkit looks up the server transport from the registry, connects, calls the tool
 
 ## Agent Auto-Detection
 
-If no `--agent` flag is provided, mcpkit detects which agents are installed by checking for their config directories (`~/.claude/`, `.cursor/`, `~/.codex/`, `.windsurf/`, `~/.augment/`). Falls back to `claude-code` if none detected.
+If no `--agent` flag is provided, mcpkit detects which agents are installed by checking for their config directories (`~/.claude/`, `.cursor/`, `~/.codex/`, `.windsurf/`, `~/.augment/`, `~/.openclaw/`). Falls back to `claude-code` if none detected.
 
 ## Registry
 
