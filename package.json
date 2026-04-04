@@ -1,6 +1,6 @@
 {
   "name": "@balakumar.dev/mcpkit",
-  "version": "0.1.15",
+  "version": "0.1.16",
   "description": "MCP client that turns any MCP server into CLI commands + lightweight agent skills — zero context bloat",
   "type": "module",
   "bin": {
