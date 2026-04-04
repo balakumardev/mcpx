@@ -6,6 +6,7 @@ import { discoverTools } from '../client.js';
 import { loadAgentSettings, resolveServerAgents } from '../agent-config.js';
 import { getGenerator } from '../generators/index.js';
 import { reconcileSkillFiles } from '../skill-sync.js';
+import { authenticateIfNeeded } from '../auth.js';
 import type { AgentType, ServerEntry } from '../types.js';
 
 async function hasSkillFiles(entry: ServerEntry, agents: AgentType[]): Promise<boolean> {
@@ -63,8 +64,13 @@ Examples:
 
             console.log(chalk.blue(`Syncing ${entry.name}...`));
 
+            // If OAuth, authenticate first
+            const authProvider = (entry.transport.type === 'http' || entry.transport.type === 'sse') && entry.transport.auth === 'oauth'
+              ? await authenticateIfNeeded(entry.transport.url, entry.transport.oauth)
+              : undefined;
+
             // Connect and discover tools
-            const { tools, serverMeta } = await discoverTools(entry.transport);
+            const { tools, serverMeta } = await discoverTools(entry.transport, authProvider);
             console.log(`  Found ${tools.length} tool(s)`);
             const ctx = { serverName: entry.name, tools, transport: entry.transport, description: entry.description, serverMeta, scope: 'global' as const };
             await reconcileSkillFiles({
