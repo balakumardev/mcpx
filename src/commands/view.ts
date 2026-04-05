@@ -19,7 +19,7 @@ Examples:
       try {
         const entry = await getServer(name);
         if (!entry) {
-          console.error(chalk.red(`Server "${name}" not found.`));
+          console.error(chalk.red(`Server "${name}" not found. Run 'mcpkit list' to see registered servers.`));
           process.exit(1);
         }
         const settings = await loadAgentSettings();

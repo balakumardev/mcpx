@@ -46,7 +46,7 @@ Pre-registered OAuth (servers without dynamic client registration):
       try {
         const entry = await getServer(name);
         if (!entry) {
-          console.error(chalk.red(`Server "${name}" not found.`));
+          console.error(chalk.red(`Server "${name}" not found. Run 'mcpkit list' to see registered servers.`));
           process.exit(1);
         }
 
@@ -252,7 +252,7 @@ Pre-registered OAuth (servers without dynamic client registration):
         if (newName) {
           const existing = await getServer(newName);
           if (existing) {
-            console.error(chalk.red(`Server "${newName}" already exists.`));
+            console.error(chalk.red(`Server "${newName}" already exists. Choose a different name.`));
             process.exit(1);
           }
           await removeServer(name);

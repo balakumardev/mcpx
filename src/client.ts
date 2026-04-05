@@ -59,7 +59,7 @@ export function resolveEnvVars(value: string): string {
   return value.replace(/\$\{([^}]+)\}/g, (_match, varName) => {
     const resolved = process.env[varName];
     if (resolved === undefined) {
-      throw new Error(`Environment variable "${varName}" is not set`);
+      throw new Error(`Environment variable "${varName}" is not set. Set it with 'export ${varName}=<value>' or 'mcpkit edit <server> --env ${varName}=<value>'.`);
     }
     return resolved;
   });
@@ -91,8 +91,8 @@ function resolveEnvValues(env: Record<string, string>): Record<string, string> {
  * A fetch wrapper that preserves the HTTP method on 301/302 redirects.
  *
  * By default, `fetch()` converts POST to GET when following 301/302 redirects
- * (per HTTP spec ambiguity). Some MCP servers (e.g. Slack) use 302 redirects
- * for load-balancing to shard URLs, causing the redirected GET to fail with 405.
+ * (per HTTP spec ambiguity). Some MCP servers use 302 redirects for
+ * load-balancing to shard URLs, causing the redirected GET to fail with 405.
  *
  * This wrapper uses `redirect: 'manual'` and re-sends with the original method.
  * 307/308 are also handled explicitly for completeness.
@@ -115,7 +115,7 @@ export async function redirectSafeFetch(url: string | URL, init?: RequestInit): 
     return response;
   }
 
-  throw new Error(`Too many redirects (max ${maxRedirects})`);
+  throw new Error(`Too many redirects (max ${maxRedirects}). Check that the server URL is correct.`);
 }
 
 /**

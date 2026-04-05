@@ -27,7 +27,7 @@ Examples:
 
         if (opts?.configure) {
           if (!isInteractiveSession()) {
-            console.error(chalk.red('`mcpkit agents --configure` requires an interactive terminal.'));
+            console.error(chalk.red('`mcpkit agents --configure` requires an interactive terminal. Use `mcpkit install -a <agent>` to set agents non-interactively.'));
             process.exit(1);
           }
 

@@ -4,13 +4,14 @@ import { getServer, removeServer, addServer } from '../config.js';
 import { getGenerator } from '../generators/index.js';
 import { loadAgentSettings, normalizeAgentList, resolveServerAgents } from '../agent-config.js';
 import { removeSkillDirectory } from '../skill-file.js';
+import { ALL_AGENTS } from '../types.js';
 import type { AgentType } from '../types.js';
 
 export function createRemoveCommand(): Command {
   return new Command('remove')
     .description('Remove an installed MCP server')
     .argument('<name>', 'Server name to remove')
-    .option('-a, --agent <agent>', 'Remove only for specific agent')
+    .option('-a, --agent <agent>', `Remove only for specific agent (${ALL_AGENTS.join(', ')})`)
     .addHelpText('after', `
 Examples:
   $ mcpkit remove github              Remove server and all skill files
@@ -19,7 +20,7 @@ Examples:
       try {
         const entry = await getServer(name);
         if (!entry) {
-          console.error(chalk.red(`Server "${name}" not found.`));
+          console.error(chalk.red(`Server "${name}" not found. Run 'mcpkit list' to see registered servers.`));
           process.exit(1);
         }
 

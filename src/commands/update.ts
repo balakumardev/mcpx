@@ -20,7 +20,11 @@ Examples:
         const servers = name ? [await getServer(name)].filter(Boolean) : await listServers();
 
         if (servers.length === 0) {
-          console.log(chalk.yellow(name ? `Server "${name}" not found.` : 'No servers registered.'));
+          if (name) {
+            console.error(chalk.red(`Server "${name}" not found. Run 'mcpkit list' to see registered servers.`));
+            process.exit(1);
+          }
+          console.log(chalk.yellow('No servers registered. Run `mcpkit install <server>` to add one.'));
           return;
         }
 

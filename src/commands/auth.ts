@@ -22,12 +22,12 @@ To enable OAuth on an existing server:
       try {
         const entry = await getServer(name);
         if (!entry) {
-          console.error(chalk.red(`Server "${name}" not found.`));
+          console.error(chalk.red(`Server "${name}" not found. Run 'mcpkit list' to see registered servers.`));
           process.exit(1);
         }
 
         if (entry.transport.type === 'stdio') {
-          console.error(chalk.red('OAuth is only supported for http/sse servers.'));
+          console.error(chalk.red(`OAuth is only supported for http/sse servers. "${name}" uses stdio transport.`));
           process.exit(1);
         }
 

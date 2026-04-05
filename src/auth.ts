@@ -127,7 +127,7 @@ function startCallbackServer(port: number): { server: Server; codePromise: Promi
 
   // Timeout after 120 seconds
   const timeout = setTimeout(() => {
-    rejectCode(new Error('OAuth callback timed out after 120 seconds'));
+    rejectCode(new Error('OAuth callback timed out after 120 seconds. Try again with `mcpkit auth <server>`.'));
     server.close();
   }, 120_000);
 
@@ -328,7 +328,7 @@ export async function authenticateIfNeeded(serverUrl: string, oauthConfig?: OAut
   const finalResult = await auth(provider, { serverUrl, authorizationCode: code, fetchFn: redirectSafeFetch });
 
   if (finalResult !== 'AUTHORIZED') {
-    throw new Error('OAuth authorization failed after receiving callback code');
+    throw new Error('OAuth authorization failed after receiving callback code. Try `mcpkit auth <server> --reset` to clear tokens and retry.');
   }
 
   return provider;

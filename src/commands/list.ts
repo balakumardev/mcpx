@@ -19,7 +19,7 @@ Examples:
           // Show tools for a specific server
           const entry = await getServer(server);
           if (!entry) {
-            console.error(chalk.red(`Server "${server}" not found.`));
+            console.error(chalk.red(`Server "${server}" not found. Run 'mcpkit list' to see registered servers.`));
             process.exit(1);
           }
 

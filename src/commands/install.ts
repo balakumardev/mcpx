@@ -13,6 +13,7 @@ import {
 import { detectAgents } from '../generators/index.js';
 import { authenticateIfNeeded } from '../auth.js';
 import { reconcileSkillFiles } from '../skill-sync.js';
+import { ALL_AGENTS } from '../types.js';
 import type { AgentSelectionMode, AgentType, AuthType, OAuthConfig, Scope, ServerEntry, TransportConfig } from '../types.js';
 
 // Derive a short name from server spec
@@ -286,16 +287,16 @@ export function createInstallCommand(): Command {
     .description('Install MCP server tools as agent skills')
     .argument('<server-spec>', 'Server command, npm package, URL, JSON string, or .json file path')
     .option('-n, --name <name>', 'Custom name for the server')
-    .option('-a, --agent <agent>', 'Target agent(s)', collect, [] as string[])
-    .option('--exclude-agent <agent>', 'Skip specific agent(s)', collect, [] as string[])
+    .option('-a, --agent <agent>', `Target agent(s) (${ALL_AGENTS.join(', ')})`, collect, [] as string[])
+    .option('--exclude-agent <agent>', `Skip specific agent(s) (${ALL_AGENTS.join(', ')})`, collect, [] as string[])
     .option('--interactive', 'Interactively configure default agents before installing')
     .option('-e, --env <env>', 'Environment variables (KEY=VALUE)', collect, [] as string[])
     .option('--header <header>', 'HTTP headers (Key: Value)', collect, [] as string[])
-    .option('--auth <type>', 'Authentication type (oauth)')
+    .option('--auth <type>', 'Authentication type (oauth or none)')
     .option('--oauth-client-id <id>', 'Pre-registered OAuth client ID (skips dynamic registration)')
     .option('--oauth-callback-port <port>', 'Fixed port for OAuth callback', parseInt)
     .option('-d, --description <text>', 'Custom skill description for agent routing (overrides auto-generated)')
-    .option('--scope <scope>', 'Installation scope', 'global')
+    .option('--scope <scope>', 'Installation scope (global or project)', 'global')
     .option('--dry-run', 'Show what would be generated without writing files')
     .addHelpText('after', `
 Examples:
