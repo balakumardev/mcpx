@@ -88,6 +88,37 @@ function resolveEnvValues(env: Record<string, string>): Record<string, string> {
 }
 
 /**
+ * A fetch wrapper that preserves the HTTP method on 301/302 redirects.
+ *
+ * By default, `fetch()` converts POST to GET when following 301/302 redirects
+ * (per HTTP spec ambiguity). Some MCP servers (e.g. Slack) use 302 redirects
+ * for load-balancing to shard URLs, causing the redirected GET to fail with 405.
+ *
+ * This wrapper uses `redirect: 'manual'` and re-sends with the original method.
+ * 307/308 are also handled explicitly for completeness.
+ */
+export async function redirectSafeFetch(url: string | URL, init?: RequestInit): Promise<Response> {
+  const maxRedirects = 5;
+  let currentUrl: string | URL = url;
+  let remaining = maxRedirects;
+
+  while (remaining-- > 0) {
+    const response = await fetch(currentUrl, { ...init, redirect: 'manual' });
+
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers.get('location');
+      if (!location) return response;
+      currentUrl = new URL(location, typeof currentUrl === 'string' ? currentUrl : currentUrl.toString());
+      continue;
+    }
+
+    return response;
+  }
+
+  throw new Error(`Too many redirects (max ${maxRedirects})`);
+}
+
+/**
  * Create the appropriate MCP transport from a config object.
  */
 export function createTransport(config: TransportConfig, authProvider?: OAuthClientProvider): Transport {
@@ -109,6 +140,7 @@ export function createTransport(config: TransportConfig, authProvider?: OAuthCli
         {
           ...(headers ? { requestInit: { headers } } : {}),
           ...(authProvider ? { authProvider } : {}),
+          fetch: redirectSafeFetch,
         },
       );
     }
@@ -120,6 +152,7 @@ export function createTransport(config: TransportConfig, authProvider?: OAuthCli
         {
           ...(headers ? { requestInit: { headers } } : {}),
           ...(authProvider ? { authProvider } : {}),
+          fetch: redirectSafeFetch,
         },
       );
     }

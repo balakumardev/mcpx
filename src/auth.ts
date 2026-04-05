@@ -8,6 +8,7 @@ import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.
 import { auth } from '@modelcontextprotocol/sdk/client/auth.js';
 import type { OAuthClientMetadata, OAuthClientInformationMixed, OAuthTokens } from '@modelcontextprotocol/sdk/shared/auth.js';
 import type { OAuthConfig } from './types.js';
+import { redirectSafeFetch } from './client.js';
 
 // --- Credential storage ---
 
@@ -314,7 +315,9 @@ export async function authenticateIfNeeded(serverUrl: string, oauthConfig?: OAut
     return provider;
   }
 
-  const result = await auth(provider, { serverUrl });
+  // Pass redirectSafeFetch to the SDK's auth() so that metadata discovery and
+  // token endpoint requests preserve POST method on 301/302 redirects.
+  const result = await auth(provider, { serverUrl, fetchFn: redirectSafeFetch });
 
   if (result === 'AUTHORIZED') {
     return provider;
@@ -322,7 +325,7 @@ export async function authenticateIfNeeded(serverUrl: string, oauthConfig?: OAut
 
   // result === 'REDIRECT' — browser was opened, wait for callback
   const code = await provider.waitForAuthorizationCode();
-  const finalResult = await auth(provider, { serverUrl, authorizationCode: code });
+  const finalResult = await auth(provider, { serverUrl, authorizationCode: code, fetchFn: redirectSafeFetch });
 
   if (finalResult !== 'AUTHORIZED') {
     throw new Error('OAuth authorization failed after receiving callback code');
