@@ -7,6 +7,7 @@ import {
   buildRuntimeConfig,
   isPersistentRuntimeEntry,
   normalizeRuntimeMode,
+  validateRuntimeCallTimeout,
   validateRuntimeIdleTimeout,
 } from '../runtime-config.js';
 import { stopRuntime } from '../runtime-manager.js';
@@ -32,7 +33,9 @@ export function createEditCommand(): Command {
     .option('--remove-param-provider', 'Remove the param provider')
     .option('--runtime <mode>', 'Set runtime mode for stdio servers (ephemeral or persistent)')
     .option('--runtime-idle-timeout <seconds>', 'Set idle timeout for persistent stdio runtimes', parseInt)
+    .option('--runtime-call-timeout <seconds>', 'Set per-call timeout for persistent stdio runtimes', parseInt)
     .option('--remove-runtime-idle-timeout', 'Clear the custom runtime idle timeout')
+    .option('--remove-runtime-call-timeout', 'Clear the custom runtime call timeout')
     .option('--description <text>', 'Set server description')
     .option('--name <new-name>', 'Rename the server')
     .addHelpText('after', `
@@ -56,7 +59,7 @@ Pre-registered OAuth (servers without dynamic client registration):
   $ mcpkit edit slack --oauth-client-id 1601185624273.8899143856786 --oauth-callback-port 3118
 
 Persistent stdio runtime:
-  $ mcpkit edit browsermcp --runtime persistent --runtime-idle-timeout 900
+  $ mcpkit edit browsermcp --runtime persistent --runtime-idle-timeout 900 --runtime-call-timeout 3600
   $ mcpkit edit browsermcp --runtime ephemeral`)
     .action(async (name: string, opts) => {
       try {
@@ -282,11 +285,13 @@ Persistent stdio runtime:
           }
         }
 
-        // --runtime / --runtime-idle-timeout / --remove-runtime-idle-timeout
+        // --runtime / --runtime-idle-timeout / --runtime-call-timeout / remove flags
         if (
           opts.runtime !== undefined
           || opts.runtimeIdleTimeout !== undefined
+          || opts.runtimeCallTimeout !== undefined
           || opts.removeRuntimeIdleTimeout
+          || opts.removeRuntimeCallTimeout
         ) {
           if (entry.transport.type !== 'stdio') {
             console.error(chalk.red(`Runtime settings are only supported for stdio servers. "${name}" uses ${entry.transport.type}.`));
@@ -301,7 +306,12 @@ Persistent stdio runtime:
             : opts.runtimeIdleTimeout !== undefined
               ? validateRuntimeIdleTimeout(opts.runtimeIdleTimeout)
               : entry.runtime?.idleTimeoutSec;
-          const nextRuntime = buildRuntimeConfig(entry.transport, nextMode, nextIdleTimeout);
+          const nextCallTimeout = opts.removeRuntimeCallTimeout
+            ? undefined
+            : opts.runtimeCallTimeout !== undefined
+              ? validateRuntimeCallTimeout(opts.runtimeCallTimeout)
+              : entry.runtime?.callTimeoutSec;
+          const nextRuntime = buildRuntimeConfig(entry.transport, nextMode, nextIdleTimeout, nextCallTimeout);
 
           if (JSON.stringify(entry.runtime ?? null) !== JSON.stringify(nextRuntime ?? null)) {
             if (nextRuntime) {
@@ -317,6 +327,11 @@ Persistent stdio runtime:
               console.log(chalk.green(`✓ Set runtime idle timeout to ${nextIdleTimeout}s`));
             } else if (opts.removeRuntimeIdleTimeout) {
               console.log(chalk.green(`✓ Removed custom runtime idle timeout`));
+            }
+            if (opts.runtimeCallTimeout !== undefined) {
+              console.log(chalk.green(`✓ Set runtime call timeout to ${nextCallTimeout}s`));
+            } else if (opts.removeRuntimeCallTimeout) {
+              console.log(chalk.green(`✓ Removed custom runtime call timeout`));
             }
             changed = true;
             restartRuntime = true;

@@ -60,6 +60,7 @@ describe('config', () => {
       '    runtime:',
       '      mode: persistent',
       '      idleTimeoutSec: 900',
+      '      callTimeoutSec: 3600',
       '    toolCount: 1',
       '    agents:',
       '      - cursor',
@@ -72,6 +73,7 @@ describe('config', () => {
     expect(registry.servers.browsermcp?.runtime).toEqual({
       mode: 'persistent',
       idleTimeoutSec: 900,
+      callTimeoutSec: 3600,
     });
   });
 

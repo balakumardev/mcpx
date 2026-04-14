@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { resolveRuntimeConfig } from './runtime-config.js';
 import type { ServerEntry } from './types.js';
@@ -14,6 +14,7 @@ export interface RuntimeRecord {
   startedAt: string;
   lastUsedAt: string;
   idleTimeoutSec: number;
+  callTimeoutSec: number;
 }
 
 function stableSerialize(value: unknown): string {
@@ -60,7 +61,13 @@ export function getRuntimeSocketPath(serverName: string): string {
   if (process.platform === 'win32') {
     return `\\\\.\\pipe\\mcpkit-${key}`;
   }
-  return join(getRuntimeDir(), `${key}.sock`);
+  const socketPath = join(getRuntimeDir(), `${key}.sock`);
+  // macOS and many Unix platforms impose a fairly small limit on Unix socket paths.
+  // Fall back to the system tmp dir when the runtime metadata directory would exceed it.
+  if (socketPath.length >= 100) {
+    return join(tmpdir(), `mcpkit-${key.slice(-10)}.sock`);
+  }
+  return socketPath;
 }
 
 export async function ensureRuntimeDir(): Promise<void> {

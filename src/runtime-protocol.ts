@@ -9,6 +9,7 @@ export interface RuntimeStatus {
   startedAt: string;
   lastUsedAt: string;
   idleTimeoutSec: number;
+  callTimeoutSec: number;
   running: boolean;
   configStatus?: 'current' | 'stale';
 }

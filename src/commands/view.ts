@@ -85,6 +85,7 @@ Examples:
           console.log(chalk.blue('\nRuntime'));
           console.log(`  Mode:    ${runtime.mode}`);
           console.log(`  Idle:    ${runtime.idleTimeoutSec}s`);
+          console.log(`  Call:    ${runtime.callTimeoutSec}s`);
         }
 
         // Metadata

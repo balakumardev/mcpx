@@ -27,7 +27,7 @@ describe('createRuntimeCommand', () => {
     vi.mocked(getServer).mockResolvedValue({
       name: 'browsermcp',
       transport: { type: 'stdio', command: 'npx', args: [] },
-      runtime: { mode: 'persistent', idleTimeoutSec: 900 },
+      runtime: { mode: 'persistent', idleTimeoutSec: 900, callTimeoutSec: 3600 },
       toolCount: 1,
       agents: ['cursor'],
       createdAt: '2026-04-14T00:00:00.000Z',
@@ -42,6 +42,7 @@ describe('createRuntimeCommand', () => {
       startedAt: '2026-04-14T00:00:00.000Z',
       lastUsedAt: '2026-04-14T00:05:00.000Z',
       idleTimeoutSec: 900,
+      callTimeoutSec: 3600,
       running: true,
       configStatus: 'current',
     });
@@ -76,6 +77,7 @@ describe('createRuntimeCommand', () => {
         startedAt: '2026-04-14T00:00:00.000Z',
         lastUsedAt: '2026-04-14T00:05:00.000Z',
         idleTimeoutSec: 900,
+        callTimeoutSec: 3600,
         running: true,
         configStatus: 'current',
       },

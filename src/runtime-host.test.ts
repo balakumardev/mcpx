@@ -119,6 +119,41 @@ describe('RuntimeHost', () => {
     }
   });
 
+  it('allows persistent tool calls to run longer than the status timeout', async () => {
+    const serverName = 'slow-browsermcp';
+    const entry = createPersistentEntry(serverName, 10);
+    const record = createRecord(serverName, 10, computeRuntimeFingerprint(entry));
+
+    const session: ConnectedToolSession = {
+      client: {} as ConnectedToolSession['client'],
+      transport: {} as ConnectedToolSession['transport'],
+      close: vi.fn(async () => {}),
+      callTool: vi.fn(async (_toolName: string, params: Record<string, unknown>) => {
+        await wait(5_200);
+        return JSON.stringify({ id: params.id });
+      }),
+      callToolsChained: vi.fn(async () => []),
+    };
+
+    const host = new RuntimeHost({
+      record,
+      session,
+      logStream: (await ensureRuntimeDir(), createWriteStream(record.logPath, { flags: 'a' })),
+    });
+    await host.start();
+
+    try {
+      const results = await callPersistentRuntime(serverName, entry, [
+        { toolName: 'step', params: { id: 'slow-call' } },
+      ]);
+
+      expect(results).toEqual([JSON.stringify({ id: 'slow-call' })]);
+      expect(session.callTool).toHaveBeenCalledTimes(1);
+    } finally {
+      await host.close();
+    }
+  }, 10_000);
+
   it('stops an active runtime and cleans up metadata', async () => {
     const serverName = 'browsermcp';
     const record = createRecord(serverName, 5);

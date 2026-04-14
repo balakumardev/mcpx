@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import chalk from 'chalk';
-import { validateRuntimeIdleTimeout } from './runtime-config.js';
+import { validateRuntimeCallTimeout, validateRuntimeIdleTimeout } from './runtime-config.js';
 import { ALL_AGENTS } from './types.js';
 import type {
   AgentSelectionMode,
@@ -82,14 +82,18 @@ function validateServerEntry(name: string, entry: unknown): string | null {
     }
     try {
       validateRuntimeIdleTimeout(runtime.idleTimeoutSec as number | undefined);
+      validateRuntimeCallTimeout(runtime.callTimeoutSec as number | undefined);
     } catch (error) {
       return error instanceof Error ? error.message : String(error);
     }
     if (transport.type !== 'stdio' && mode === 'persistent') {
       return '"runtime.mode" can only be "persistent" for stdio transports';
     }
-    if (mode !== 'persistent' && runtime.idleTimeoutSec !== undefined) {
-      return '"runtime.idleTimeoutSec" can only be set when runtime.mode is "persistent"';
+    if (
+      mode !== 'persistent'
+      && (runtime.idleTimeoutSec !== undefined || runtime.callTimeoutSec !== undefined)
+    ) {
+      return '"runtime.idleTimeoutSec" and "runtime.callTimeoutSec" can only be set when runtime.mode is "persistent"';
     }
   }
 

@@ -118,6 +118,7 @@ export function buildSkillContent(ctx: GeneratorContext): string {
   const description = buildFrontmatterDescription(ctx);
   const serverName = ctx.serverMeta?.name || ctx.serverName;
   const domain = inferDomain(ctx.tools) || serverName;
+  const isPersistentCapable = ctx.transport.type === 'stdio';
 
   const lines: string[] = [
     '---',
@@ -144,6 +145,38 @@ export function buildSkillContent(ctx: GeneratorContext): string {
     }
   }
   lines.push('');
+
+  lines.push('## How to Use mcpkit');
+  lines.push('');
+  lines.push('List the available tools on this server:');
+  lines.push('```bash');
+  lines.push(`mcpkit list ${ctx.serverName}`);
+  lines.push('```');
+  lines.push('');
+  lines.push('Inspect the saved server config and transport details:');
+  lines.push('```bash');
+  lines.push(`mcpkit view ${ctx.serverName}`);
+  lines.push('```');
+  lines.push('');
+  lines.push('Call one tool with JSON params:');
+  lines.push('```bash');
+  lines.push(`mcpkit call ${ctx.serverName} <tool_name> '{}'`);
+  lines.push('```');
+  lines.push('');
+  lines.push('Chain dependent tool calls in one session:');
+  lines.push('```bash');
+  lines.push(`mcpkit call ${ctx.serverName} <tool_name> '{}' --chain 'another_tool:{"value":"$prev.someField"}'`);
+  lines.push('```');
+  lines.push('');
+  if (isPersistentCapable) {
+    lines.push('This server uses stdio transport, so it can use `mcpkit` persistent runtimes:');
+    lines.push('```bash');
+    lines.push(`mcpkit edit ${ctx.serverName} --runtime persistent --runtime-idle-timeout 900 --runtime-call-timeout 3600`);
+    lines.push(`mcpkit runtime status ${ctx.serverName}`);
+    lines.push(`mcpkit runtime stop ${ctx.serverName}`);
+    lines.push('```');
+    lines.push('');
+  }
 
   lines.push('## Tools');
   lines.push('');

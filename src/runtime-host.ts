@@ -90,6 +90,7 @@ export class RuntimeHost {
       startedAt: this.record.startedAt,
       lastUsedAt: this.lastUsedAt,
       idleTimeoutSec: this.record.idleTimeoutSec,
+      callTimeoutSec: this.record.callTimeoutSec,
       running: !this.closed,
       configStatus: 'current',
     };
@@ -267,6 +268,7 @@ export async function createRuntimeHostForServer(serverName: string): Promise<Ru
       startedAt: now,
       lastUsedAt: now,
       idleTimeoutSec: runtime.idleTimeoutSec,
+      callTimeoutSec: runtime.callTimeoutSec,
     },
     session,
     logStream,

@@ -108,7 +108,7 @@ describe('createEditCommand', () => {
     const entry: ServerEntry = {
       name: 'browsermcp',
       transport: { type: 'stdio', command: 'npx', args: [] },
-      runtime: { mode: 'persistent', idleTimeoutSec: 900 },
+      runtime: { mode: 'persistent', idleTimeoutSec: 900, callTimeoutSec: 3600 },
       toolCount: 5,
       agents: ['cursor'],
       agentSelectionMode: 'explicit',
@@ -119,14 +119,15 @@ describe('createEditCommand', () => {
     vi.mocked(getServer).mockResolvedValue(structuredClone(entry));
 
     const command = createEditCommand();
-    await command.parseAsync(['browsermcp', '--runtime-idle-timeout', '600'], { from: 'user' });
+    await command.parseAsync(['browsermcp', '--runtime-call-timeout', '7200'], { from: 'user' });
 
     expect(stopRuntime).toHaveBeenCalledWith('browsermcp');
     expect(addServer).toHaveBeenCalledWith(expect.objectContaining({
       name: 'browsermcp',
       runtime: {
         mode: 'persistent',
-        idleTimeoutSec: 600,
+        idleTimeoutSec: 900,
+        callTimeoutSec: 7200,
       },
     }));
   });

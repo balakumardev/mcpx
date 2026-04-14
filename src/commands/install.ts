@@ -206,6 +206,7 @@ async function installServer(
     paramProvider?: string;
     runtimeMode?: string;
     runtimeIdleTimeout?: number;
+    runtimeCallTimeout?: number;
     dryRun?: boolean;
     scope: Scope;
     agents: AgentType[];
@@ -239,7 +240,12 @@ async function installServer(
     transport.auth = opts.auth;
   }
 
-  const runtime = buildRuntimeConfig(transport, opts.runtimeMode, opts.runtimeIdleTimeout);
+  const runtime = buildRuntimeConfig(
+    transport,
+    opts.runtimeMode,
+    opts.runtimeIdleTimeout,
+    opts.runtimeCallTimeout,
+  );
 
   console.log(chalk.blue(`Connecting to server "${name}"...`));
 
@@ -320,6 +326,7 @@ export function createInstallCommand(): Command {
     .option('--param-provider <command>', 'Shell command that outputs JSON to merge into every tool call\'s params (e.g. credential providers)')
     .option('--runtime <mode>', 'Runtime mode for stdio servers (ephemeral or persistent)')
     .option('--runtime-idle-timeout <seconds>', 'Idle timeout before a persistent stdio runtime shuts down', parseInt)
+    .option('--runtime-call-timeout <seconds>', 'Per-call timeout for persistent stdio runtimes', parseInt)
     .option('-d, --description <text>', 'Custom skill description for agent routing (overrides auto-generated)')
     .option('--scope <scope>', 'Installation scope (global or project)', 'global')
     .option('--dry-run', 'Show what would be generated without writing files')
@@ -338,7 +345,7 @@ OAuth servers (with pre-registered client ID):
   $ mcpkit install https://mcp.slack.com/mcp --auth oauth --oauth-client-id 1601185624273.8899143856786 --oauth-callback-port 3118 -n slack
 
 Persistent stdio runtime:
-  $ mcpkit install "npx -y @browsermcp/mcp" -n browsermcp --runtime persistent --runtime-idle-timeout 900`)
+  $ mcpkit install "npx -y @browsermcp/mcp" -n browsermcp --runtime persistent --runtime-idle-timeout 900 --runtime-call-timeout 3600`)
     .action(async (serverSpec: string, opts) => {
       try {
         const detectedAgents = detectAgents();
@@ -376,8 +383,9 @@ Persistent stdio runtime:
               auth: opts.auth,
               description: opts.description,
               paramProvider: opts.paramProvider,
-              runtimeMode: opts.runtime,
-              runtimeIdleTimeout: opts.runtimeIdleTimeout,
+          runtimeMode: opts.runtime,
+          runtimeIdleTimeout: opts.runtimeIdleTimeout,
+          runtimeCallTimeout: opts.runtimeCallTimeout,
               dryRun: opts.dryRun,
               scope: opts.scope || 'global',
               agents: agentSelection.agents,
@@ -407,6 +415,7 @@ Persistent stdio runtime:
             paramProvider: opts.paramProvider,
             runtimeMode: opts.runtime,
             runtimeIdleTimeout: opts.runtimeIdleTimeout,
+            runtimeCallTimeout: opts.runtimeCallTimeout,
             dryRun: opts.dryRun,
             scope: opts.scope || 'global',
             agents: agentSelection.agents,

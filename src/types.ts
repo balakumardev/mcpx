@@ -4,6 +4,7 @@ export type AuthType = 'oauth';
 export type RuntimeMode = 'ephemeral' | 'persistent';
 
 export const DEFAULT_RUNTIME_IDLE_TIMEOUT_SEC = 15 * 60;
+export const DEFAULT_RUNTIME_CALL_TIMEOUT_SEC = 30 * 60;
 
 export interface OAuthConfig {
   clientId?: string;
@@ -46,6 +47,7 @@ export interface ParamProviderConfig {
 export interface ServerRuntimeConfig {
   mode: RuntimeMode;
   idleTimeoutSec?: number;
+  callTimeoutSec?: number;
 }
 
 // Registry types

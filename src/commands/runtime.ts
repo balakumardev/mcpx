@@ -7,14 +7,20 @@ import {
   listPersistentRuntimeStatuses,
   stopRuntime,
 } from '../runtime-manager.js';
-import { resolveRuntimeConfig } from '../runtime-config.js';
+import { resolveRuntimeConfig, type ResolvedRuntimeConfig } from '../runtime-config.js';
 
-function printRuntimeStatus(name: string, status: Awaited<ReturnType<typeof getRuntimeStatus>>, configuredMode?: string): void {
+function printRuntimeStatus(
+  name: string,
+  status: Awaited<ReturnType<typeof getRuntimeStatus>>,
+  runtime?: ResolvedRuntimeConfig,
+): void {
   console.log(chalk.bold(`\n${name}\n`));
   if (!status) {
     console.log(`  Running: ${chalk.yellow('no')}`);
-    if (configuredMode) {
-      console.log(`  Mode:    ${configuredMode}`);
+    if (runtime) {
+      console.log(`  Mode:    ${runtime.mode}`);
+      console.log(`  Idle:    ${runtime.idleTimeoutSec}s`);
+      console.log(`  Call:    ${runtime.callTimeoutSec}s`);
     }
     console.log();
     return;
@@ -22,8 +28,11 @@ function printRuntimeStatus(name: string, status: Awaited<ReturnType<typeof getR
 
   console.log(`  Running: ${status.running ? chalk.green('yes') : chalk.yellow('no')}`);
   console.log(`  PID:     ${status.pid}`);
-  console.log(`  Mode:    ${configuredMode ?? 'persistent'}`);
-  console.log(`  Idle:    ${status.idleTimeoutSec}s`);
+  console.log(`  Mode:    ${runtime?.mode ?? 'persistent'}`);
+  console.log(`  Idle:    ${runtime?.idleTimeoutSec ?? status.idleTimeoutSec}s`);
+  if (runtime) {
+    console.log(`  Call:    ${runtime.callTimeoutSec}s`);
+  }
   console.log(`  Started: ${status.startedAt}`);
   console.log(`  Last:    ${status.lastUsedAt}`);
   console.log(`  Socket:  ${status.socketPath}`);
@@ -67,10 +76,10 @@ Examples:
                 console.error(chalk.red(`Server "${name}" not found and no runtime metadata exists.`));
                 process.exit(1);
               }
-              const mode = entry?.transport.type === 'stdio'
-                ? resolveRuntimeConfig(entry.runtime).mode
+              const runtime = entry?.transport.type === 'stdio'
+                ? resolveRuntimeConfig(entry.runtime)
                 : undefined;
-              printRuntimeStatus(name, status, mode);
+              printRuntimeStatus(name, status, runtime);
               return;
             }
 
@@ -81,7 +90,7 @@ Examples:
             }
 
             for (const status of statuses) {
-              printRuntimeStatus(status.serverName, status, 'persistent');
+              printRuntimeStatus(status.serverName, status);
             }
           } catch (err) {
             console.error(chalk.red(`Error: ${err instanceof Error ? err.message : err}`));

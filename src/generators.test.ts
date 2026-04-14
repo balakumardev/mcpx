@@ -55,4 +55,24 @@ describe('generators', () => {
     expect(generate({ ...ctx, scope: 'project' }).filePath)
       .toBe(`${process.cwd()}/skills/mcpkit-github/SKILL.md`);
   });
+
+  it('includes mcpkit usage guidance in generated skill content', async () => {
+    const { buildSkillContent } = await import('./generators/index.js');
+
+    const content = buildSkillContent({
+      ...ctx,
+      tools: [
+        {
+          name: 'browser_snapshot',
+          description: 'Capture accessibility snapshot of the current page',
+          inputSchema: { type: 'object', properties: {} },
+        },
+      ],
+    });
+
+    expect(content).toContain('## How to Use mcpkit');
+    expect(content).toContain('mcpkit list github');
+    expect(content).toContain('mcpkit view github');
+    expect(content).toContain('mcpkit edit github --runtime persistent --runtime-idle-timeout 900 --runtime-call-timeout 3600');
+  });
 });

@@ -17,8 +17,9 @@ import {
 } from './runtime-store.js';
 import type { ToolCall } from './client.js';
 import type { ServerEntry } from './types.js';
+import { resolveRuntimeConfig } from './runtime-config.js';
 
-const RUNTIME_REQUEST_TIMEOUT_MS = 5_000;
+const RUNTIME_STATUS_TIMEOUT_MS = 5_000;
 const RUNTIME_START_TIMEOUT_MS = 10_000;
 
 function wait(ms: number): Promise<void> {
@@ -102,7 +103,7 @@ function configStatus(
 export async function sendRuntimeRequest(
   socketPath: string,
   request: RuntimeRequest,
-  timeoutMs = RUNTIME_REQUEST_TIMEOUT_MS,
+  timeoutMs = RUNTIME_STATUS_TIMEOUT_MS,
 ): Promise<RuntimeResponse> {
   return await new Promise<RuntimeResponse>((resolve, reject) => {
     const socket = connect(socketPath);
@@ -308,11 +309,12 @@ export async function callPersistentRuntime(
   calls: ToolCall[],
 ): Promise<string[]> {
   const status = await ensurePersistentRuntime(serverName, entry);
+  const runtime = resolveRuntimeConfig(entry.runtime);
   const response = await sendRuntimeRequest(status.socketPath, {
     requestId: requestId(),
     type: 'call',
     calls,
-  });
+  }, runtime.callTimeoutSec * 1000);
 
   if (!response.ok) {
     throw new Error(response.error);
