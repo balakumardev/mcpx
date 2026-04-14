@@ -52,6 +52,17 @@ function validateServerEntry(name: string, entry: unknown): string | null {
     }
   }
 
+  // paramProvider
+  if (e.paramProvider !== undefined) {
+    if (typeof e.paramProvider !== 'object' || e.paramProvider === null) {
+      return '"paramProvider" must be an object';
+    }
+    const pp = e.paramProvider as Record<string, unknown>;
+    if (typeof pp.command !== 'string' || pp.command.trim() === '') {
+      return '"paramProvider.command" must be a non-empty string';
+    }
+  }
+
   // toolCount
   if (e.toolCount !== undefined && typeof e.toolCount !== 'number') {
     return '"toolCount" must be a number';

@@ -54,13 +54,13 @@ Chained calls (single persistent session — useful for servers requiring sessio
             }
           }
 
-          const results = await callToolsChained(entry.transport, calls, authProvider);
+          const results = await callToolsChained(entry.transport, calls, authProvider, entry.paramProvider);
           // Print each result separated by newline
           for (const r of results) {
             if (r) process.stdout.write(r + '\n');
           }
         } else {
-          const result = await callTool(entry.transport, tool, params, authProvider);
+          const result = await callTool(entry.transport, tool, params, authProvider, entry.paramProvider);
           process.stdout.write(result);
         }
       } catch (err) {

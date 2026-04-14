@@ -21,6 +21,8 @@ export function createEditCommand(): Command {
     .option('--auth <type>', 'Set auth type (oauth or none)')
     .option('--oauth-client-id <id>', 'Set pre-registered OAuth client ID')
     .option('--oauth-callback-port <port>', 'Set fixed OAuth callback port', parseInt)
+    .option('--param-provider <command>', 'Set a shell command that outputs JSON to merge into tool call params')
+    .option('--remove-param-provider', 'Remove the param provider')
     .option('--description <text>', 'Set server description')
     .option('--name <new-name>', 'Rename the server')
     .addHelpText('after', `
@@ -237,6 +239,24 @@ Pre-registered OAuth (servers without dynamic client registration):
               console.log(chalk.green(`✓ Set OAuth callback port to ${opts.oauthCallbackPort}`));
               changed = true;
             }
+          }
+        }
+
+        // --param-provider
+        if (opts.paramProvider !== undefined) {
+          entry.paramProvider = { command: opts.paramProvider };
+          console.log(chalk.green(`✓ Set param provider: ${opts.paramProvider}`));
+          changed = true;
+        }
+
+        // --remove-param-provider
+        if (opts.removeParamProvider) {
+          if (entry.paramProvider) {
+            delete entry.paramProvider;
+            console.log(chalk.green(`✓ Removed param provider`));
+            changed = true;
+          } else {
+            console.warn(chalk.yellow('No param provider configured.'));
           }
         }
 

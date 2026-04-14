@@ -70,6 +70,15 @@ Examples:
           }
         }
 
+        // Param provider
+        if (entry.paramProvider) {
+          console.log(chalk.blue('\nParam Provider'));
+          console.log(`  Command: ${entry.paramProvider.command}${entry.paramProvider.args ? ' ' + entry.paramProvider.args.join(' ') : ''}`);
+          if (entry.paramProvider.ttl) {
+            console.log(`  TTL:     ${entry.paramProvider.ttl}s`);
+          }
+        }
+
         // Metadata
         console.log(chalk.blue('\nMetadata'));
         console.log(`  Tools:   ${entry.toolCount}`);

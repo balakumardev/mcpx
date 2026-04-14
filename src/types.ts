@@ -33,11 +33,19 @@ export interface SseTransportConfig {
 
 export type TransportConfig = StdioTransportConfig | HttpTransportConfig | SseTransportConfig;
 
+// Param provider — runs a command before each tool call and merges JSON output into params
+export interface ParamProviderConfig {
+  command: string;    // shell command to run (e.g. "eiamcli iamticket")
+  args?: string[];    // optional arguments
+  ttl?: number;       // cache TTL in seconds (default: 0 = no cache)
+}
+
 // Registry types
 export interface ServerEntry {
   name: string;
   transport: TransportConfig;
   description?: string;
+  paramProvider?: ParamProviderConfig;
   toolCount: number;
   agents: AgentType[];
   agentSelectionMode?: AgentSelectionMode;

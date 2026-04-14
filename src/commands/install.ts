@@ -14,7 +14,7 @@ import { detectAgents } from '../generators/index.js';
 import { authenticateIfNeeded } from '../auth.js';
 import { reconcileSkillFiles } from '../skill-sync.js';
 import { ALL_AGENTS } from '../types.js';
-import type { AgentSelectionMode, AgentType, AuthType, OAuthConfig, Scope, ServerEntry, TransportConfig } from '../types.js';
+import type { AgentSelectionMode, AgentType, AuthType, OAuthConfig, ParamProviderConfig, Scope, ServerEntry, TransportConfig } from '../types.js';
 
 // Derive a short name from server spec
 function deriveName(input: string): string {
@@ -192,6 +192,7 @@ async function installServer(
     header?: string[];
     auth?: AuthType;
     description?: string;
+    paramProvider?: string;
     dryRun?: boolean;
     scope: Scope;
     agents: AgentType[];
@@ -267,10 +268,14 @@ async function installServer(
   // Save to registry
   if (!opts.dryRun) {
     const now = new Date().toISOString();
+    const paramProvider: ParamProviderConfig | undefined = opts.paramProvider
+      ? { command: opts.paramProvider }
+      : undefined;
     const entry: ServerEntry = {
       name,
       transport,
       ...(opts.description ? { description: opts.description } : {}),
+      ...(paramProvider ? { paramProvider } : {}),
       toolCount: tools.length,
       agents,
       agentSelectionMode: opts.agentSelectionMode,
@@ -295,6 +300,7 @@ export function createInstallCommand(): Command {
     .option('--auth <type>', 'Authentication type (oauth or none)')
     .option('--oauth-client-id <id>', 'Pre-registered OAuth client ID (skips dynamic registration)')
     .option('--oauth-callback-port <port>', 'Fixed port for OAuth callback', parseInt)
+    .option('--param-provider <command>', 'Shell command that outputs JSON to merge into every tool call\'s params (e.g. credential providers)')
     .option('-d, --description <text>', 'Custom skill description for agent routing (overrides auto-generated)')
     .option('--scope <scope>', 'Installation scope (global or project)', 'global')
     .option('--dry-run', 'Show what would be generated without writing files')
@@ -347,6 +353,7 @@ OAuth servers (with pre-registered client ID):
               header: opts.header,
               auth: opts.auth,
               description: opts.description,
+              paramProvider: opts.paramProvider,
               dryRun: opts.dryRun,
               scope: opts.scope || 'global',
               agents: agentSelection.agents,
@@ -373,6 +380,7 @@ OAuth servers (with pre-registered client ID):
             header: opts.header,
             auth: opts.auth,
             description: opts.description,
+            paramProvider: opts.paramProvider,
             dryRun: opts.dryRun,
             scope: opts.scope || 'global',
             agents: agentSelection.agents,

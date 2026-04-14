@@ -1,10 +1,11 @@
+import { execFile } from 'node:child_process';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
-import type { TransportConfig, ToolInfo, ServerMeta } from './types.js';
+import type { TransportConfig, ToolInfo, ServerMeta, ParamProviderConfig } from './types.js';
 
 /**
  * Replace $prev.field references in params with values from the previous tool result.
@@ -24,6 +25,65 @@ function substituteRefs(
     }
   }
   return result;
+}
+
+// --- Param provider: run a command and merge its JSON output into tool params ---
+
+const paramProviderCache = new Map<string, { data: Record<string, unknown>; expiresAt: number }>();
+
+function cacheKey(config: ParamProviderConfig): string {
+  return `${config.command} ${(config.args ?? []).join(' ')}`;
+}
+
+/**
+ * Execute a paramProvider command and return its parsed JSON output.
+ * Results are cached by TTL if configured.
+ */
+export async function runParamProvider(config: ParamProviderConfig): Promise<Record<string, unknown>> {
+  const key = cacheKey(config);
+  const cached = paramProviderCache.get(key);
+  if (cached && Date.now() < cached.expiresAt) {
+    return cached.data;
+  }
+
+  const parts = config.args
+    ? [config.command, ...config.args]
+    : config.command.split(/\s+/);
+  const cmd = parts[0];
+  const args = parts.slice(1);
+
+  const stdout = await new Promise<string>((resolve, reject) => {
+    execFile(cmd, args, { timeout: 30_000 }, (err, stdout, stderr) => {
+      if (err) {
+        reject(new Error(`paramProvider "${config.command}" failed: ${stderr || err.message}`));
+      } else {
+        resolve(stdout.trim());
+      }
+    });
+  });
+
+  let data: Record<string, unknown>;
+  try {
+    data = JSON.parse(stdout);
+  } catch {
+    throw new Error(`paramProvider "${config.command}" returned non-JSON output: ${stdout.slice(0, 200)}`);
+  }
+
+  if (config.ttl && config.ttl > 0) {
+    paramProviderCache.set(key, { data, expiresAt: Date.now() + config.ttl * 1000 });
+  }
+
+  return data;
+}
+
+/**
+ * Merge paramProvider output into params. User-supplied params take precedence.
+ */
+function mergeParams(
+  userParams: Record<string, unknown>,
+  providerParams: Record<string, unknown>,
+): Record<string, unknown> {
+  return { ...providerParams, ...userParams };
 }
 
 /**
@@ -340,13 +400,19 @@ export async function callTool(
   toolName: string,
   params: Record<string, unknown>,
   authProvider?: OAuthClientProvider,
+  paramProvider?: ParamProviderConfig,
 ): Promise<string> {
   const client = new Client({ name: 'mcpkit', version: __PKG_VERSION__ });
   const transport = createTransport(config, authProvider);
 
   try {
     await client.connect(transport);
-    const result = await client.callTool({ name: toolName, arguments: params });
+    let finalParams = params;
+    if (paramProvider) {
+      const injected = await runParamProvider(paramProvider);
+      finalParams = mergeParams(params, injected);
+    }
+    const result = await client.callTool({ name: toolName, arguments: finalParams });
     return extractResultText(result as Record<string, unknown>);
   } finally {
     await transport.close();
@@ -363,18 +429,27 @@ export async function callToolsChained(
   config: TransportConfig,
   calls: Array<{ toolName: string; params: Record<string, unknown> }>,
   authProvider?: OAuthClientProvider,
+  paramProvider?: ParamProviderConfig,
 ): Promise<string[]> {
   const client = new Client({ name: 'mcpkit', version: __PKG_VERSION__ });
   const transport = createTransport(config, authProvider);
 
   try {
     await client.connect(transport);
+
+    // Run paramProvider once for the entire session
+    let injectedParams: Record<string, unknown> = {};
+    if (paramProvider) {
+      injectedParams = await runParamProvider(paramProvider);
+    }
+
     const results: string[] = [];
     let prevResult: Record<string, unknown> = {};
 
     for (const { toolName, params } of calls) {
       const resolvedParams = substituteRefs(params, prevResult);
-      const result = await client.callTool({ name: toolName, arguments: resolvedParams });
+      const finalParams = paramProvider ? mergeParams(resolvedParams, injectedParams) : resolvedParams;
+      const result = await client.callTool({ name: toolName, arguments: finalParams });
       const text = extractResultText(result as Record<string, unknown>);
 
       // Parse result as JSON for $prev substitution in subsequent calls
