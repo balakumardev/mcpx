@@ -224,6 +224,19 @@ export interface DiscoveryResult {
   serverMeta: ServerMeta;
 }
 
+export interface ToolCall {
+  toolName: string;
+  params: Record<string, unknown>;
+}
+
+export interface ConnectedToolSession {
+  client: Client;
+  transport: Transport;
+  close(): Promise<void>;
+  callTool(toolName: string, params: Record<string, unknown>): Promise<string>;
+  callToolsChained(calls: ToolCall[]): Promise<string[]>;
+}
+
 /**
  * Extract npm package name from a stdio transport config.
  * Handles: npx @scope/pkg, npx -y @scope/pkg, npx pkg@latest, etc.
@@ -393,6 +406,68 @@ function extractResultText(result: Record<string, unknown>): string {
 }
 
 /**
+ * Connect once and return a reusable MCP tool session.
+ */
+export async function connectToolSession(
+  config: TransportConfig,
+  authProvider?: OAuthClientProvider,
+  paramProvider?: ParamProviderConfig,
+): Promise<ConnectedToolSession> {
+  const client = new Client({ name: 'mcpkit', version: __PKG_VERSION__ });
+  const transport = createTransport(config, authProvider);
+  let closePromise: Promise<void> | undefined;
+
+  const close = (): Promise<void> => {
+    closePromise ??= transport.close();
+    return closePromise;
+  };
+
+  const callSingleTool = async (toolName: string, params: Record<string, unknown>): Promise<string> => {
+    const injectedParams = paramProvider ? await runParamProvider(paramProvider) : {};
+    const finalParams = paramProvider ? mergeParams(params, injectedParams) : params;
+    const result = await client.callTool({ name: toolName, arguments: finalParams });
+    return extractResultText(result as Record<string, unknown>);
+  };
+
+  try {
+    await client.connect(transport);
+  } catch (error) {
+    await close();
+    throw error;
+  }
+
+  return {
+    client,
+    transport,
+    close,
+    callTool: callSingleTool,
+    async callToolsChained(calls: ToolCall[]): Promise<string[]> {
+      const injectedParams = paramProvider ? await runParamProvider(paramProvider) : {};
+      const results: string[] = [];
+      let prevResult: Record<string, unknown> = {};
+
+      for (const { toolName, params } of calls) {
+        const resolvedParams = substituteRefs(params, prevResult);
+        const finalParams = paramProvider ? mergeParams(resolvedParams, injectedParams) : resolvedParams;
+        const result = await client.callTool({ name: toolName, arguments: finalParams });
+        const text = extractResultText(result as Record<string, unknown>);
+
+        // Parse result as JSON for $prev substitution in subsequent calls
+        try {
+          prevResult = JSON.parse(text);
+        } catch {
+          prevResult = { _text: text };
+        }
+
+        results.push(text);
+      }
+
+      return results;
+    },
+  };
+}
+
+/**
  * Connect to an MCP server, invoke a tool, extract the text result, then disconnect.
  */
 export async function callTool(
@@ -402,20 +477,12 @@ export async function callTool(
   authProvider?: OAuthClientProvider,
   paramProvider?: ParamProviderConfig,
 ): Promise<string> {
-  const client = new Client({ name: 'mcpkit', version: __PKG_VERSION__ });
-  const transport = createTransport(config, authProvider);
+  const session = await connectToolSession(config, authProvider, paramProvider);
 
   try {
-    await client.connect(transport);
-    let finalParams = params;
-    if (paramProvider) {
-      const injected = await runParamProvider(paramProvider);
-      finalParams = mergeParams(params, injected);
-    }
-    const result = await client.callTool({ name: toolName, arguments: finalParams });
-    return extractResultText(result as Record<string, unknown>);
+    return await session.callTool(toolName, params);
   } finally {
-    await transport.close();
+    await session.close();
   }
 }
 
@@ -427,43 +494,15 @@ export async function callTool(
  */
 export async function callToolsChained(
   config: TransportConfig,
-  calls: Array<{ toolName: string; params: Record<string, unknown> }>,
+  calls: ToolCall[],
   authProvider?: OAuthClientProvider,
   paramProvider?: ParamProviderConfig,
 ): Promise<string[]> {
-  const client = new Client({ name: 'mcpkit', version: __PKG_VERSION__ });
-  const transport = createTransport(config, authProvider);
+  const session = await connectToolSession(config, authProvider, paramProvider);
 
   try {
-    await client.connect(transport);
-
-    // Run paramProvider once for the entire session
-    let injectedParams: Record<string, unknown> = {};
-    if (paramProvider) {
-      injectedParams = await runParamProvider(paramProvider);
-    }
-
-    const results: string[] = [];
-    let prevResult: Record<string, unknown> = {};
-
-    for (const { toolName, params } of calls) {
-      const resolvedParams = substituteRefs(params, prevResult);
-      const finalParams = paramProvider ? mergeParams(resolvedParams, injectedParams) : resolvedParams;
-      const result = await client.callTool({ name: toolName, arguments: finalParams });
-      const text = extractResultText(result as Record<string, unknown>);
-
-      // Parse result as JSON for $prev substitution in subsequent calls
-      try {
-        prevResult = JSON.parse(text);
-      } catch {
-        prevResult = { _text: text };
-      }
-
-      results.push(text);
-    }
-
-    return results;
+    return await session.callToolsChained(calls);
   } finally {
-    await transport.close();
+    await session.close();
   }
 }

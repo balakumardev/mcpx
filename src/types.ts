@@ -1,6 +1,9 @@
 // Transport types
 export type TransportType = 'stdio' | 'http' | 'sse';
 export type AuthType = 'oauth';
+export type RuntimeMode = 'ephemeral' | 'persistent';
+
+export const DEFAULT_RUNTIME_IDLE_TIMEOUT_SEC = 15 * 60;
 
 export interface OAuthConfig {
   clientId?: string;
@@ -40,12 +43,18 @@ export interface ParamProviderConfig {
   ttl?: number;       // cache TTL in seconds (default: 0 = no cache)
 }
 
+export interface ServerRuntimeConfig {
+  mode: RuntimeMode;
+  idleTimeoutSec?: number;
+}
+
 // Registry types
 export interface ServerEntry {
   name: string;
   transport: TransportConfig;
   description?: string;
   paramProvider?: ParamProviderConfig;
+  runtime?: ServerRuntimeConfig;
   toolCount: number;
   agents: AgentType[];
   agentSelectionMode?: AgentSelectionMode;

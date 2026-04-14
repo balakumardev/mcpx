@@ -9,6 +9,7 @@ import { createViewCommand } from './commands/view.js';
 import { createEditCommand } from './commands/edit.js';
 import { createAuthCommand } from './commands/auth.js';
 import { createAgentsCommand } from './commands/agents.js';
+import { createRuntimeCommand } from './commands/runtime.js';
 
 const program = new Command()
   .name('mcpkit')
@@ -25,5 +26,6 @@ program.addCommand(createViewCommand());
 program.addCommand(createEditCommand());
 program.addCommand(createAuthCommand());
 program.addCommand(createAgentsCommand());
+program.addCommand(createRuntimeCommand());
 
 program.parse();

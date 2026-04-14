@@ -3,6 +3,7 @@ import chalk from 'chalk';
 import { getServer, removeServer, addServer } from '../config.js';
 import { getGenerator } from '../generators/index.js';
 import { loadAgentSettings, normalizeAgentList, resolveServerAgents } from '../agent-config.js';
+import { stopRuntime } from '../runtime-manager.js';
 import { removeSkillDirectory } from '../skill-file.js';
 import { ALL_AGENTS } from '../types.js';
 import type { AgentType } from '../types.js';
@@ -47,6 +48,7 @@ Examples:
         }
 
         if (!opts.agent) {
+          await stopRuntime(name, { removeLog: true });
           await removeServer(name);
           console.log(chalk.green(`✓ Server "${name}" removed from registry`));
         } else {
@@ -54,6 +56,7 @@ Examples:
           entry.agentSelectionMode = 'explicit';
           entry.agents = nextAgents;
           if (entry.agents.length === 0) {
+            await stopRuntime(name, { removeLog: true });
             await removeServer(name);
             console.log(chalk.green(`✓ Server "${name}" removed from registry (no agents left)`));
           } else {

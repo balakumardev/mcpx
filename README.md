@@ -89,10 +89,39 @@ The JSON format supports the standard `mcpServers` structure used by Claude Desk
 
 Call a tool on a registered server. This is what the generated skill files teach agents to run. For OAuth servers, tokens are used automatically.
 
+By default, `mcpkit call` connects to the server, runs the tool once, prints the result, and disconnects.
+
+- Use `--chain` to run multiple tool calls sequentially in the same MCP session. This is useful when a later tool call depends on data returned by the previous one.
+- For `stdio` servers configured with `runtime.mode: persistent`, normal `mcpkit call` automatically starts or reuses a background runtime and returns the tool result immediately. This keeps the agent-facing command shape the same while reusing one long-lived MCP session behind the scenes.
+- Use `--keepalive` for a manual blocking session that keeps a stdio server process alive until `Ctrl+C`. This is mainly useful for debugging or one-off manual workflows; it is separate from the automatic background runtime path.
+
 ```bash
 mcpkit call filesystem read_file '{"path":"/tmp/example.txt"}'
 mcpkit call github search_repositories '{"query":"mcpkit"}'
 mcpkit call postman list_collections '{}'   # OAuth tokens applied automatically
+
+# Reuse one session for multiple tool calls
+mcpkit call myserver login '{}' --chain 'search:{"query":"hello","token":"$prev.token"}'
+
+# Auto-start and reuse a background stdio runtime for future calls
+mcpkit install "npx -y @browsermcp/mcp" -n browsermcp --runtime persistent --runtime-idle-timeout 900
+mcpkit call browsermcp create_session '{}'
+mcpkit call browsermcp browser_snapshot '{}'
+
+# Keep a stdio server process alive after the initial call in the foreground
+mcpkit call browsermcp create_session '{}' --keepalive
+```
+
+When using `--chain`, values from the previous JSON result can be referenced with `$prev.field`. If the previous result is plain text instead of JSON, it is available as `$prev._text`.
+
+### `mcpkit runtime <subcommand>`
+
+Inspect or stop persistent stdio runtimes managed by `mcpkit`.
+
+```bash
+mcpkit runtime status
+mcpkit runtime status browsermcp
+mcpkit runtime stop browsermcp
 ```
 
 ### `mcpkit list [server]`
@@ -249,10 +278,11 @@ So it's not competing with tool search. It's more like: keep your core MCPs as M
 
 ## How It Works
 
-1. **Connect** — mcpkit connects to the MCP server using stdio, HTTP, or SSE transport
-2. **Discover** — calls `tools/list` to get all available tools with their schemas
-3. **Generate** — creates agent-specific skill files with tool docs and `mcpkit call` examples
-4. **Register** — saves the server config to `~/.mcpkit/servers.yaml` for future calls
+1. **Resolve** — mcpkit loads the saved server config from `~/.mcpkit/servers.yaml`
+2. **Connect** — for one-shot servers, mcpkit connects directly using stdio, HTTP, or SSE; for persistent stdio servers, it auto-starts or reuses a local background runtime
+3. **Discover** — calls `tools/list` to get all available tools with their schemas
+4. **Generate** — creates agent-specific skill files with tool docs and `mcpkit call` examples
+5. **Register** — saves the server config to `~/.mcpkit/servers.yaml` for future calls
 
 When an agent encounters a task matching a skill, it reads the skill file and runs:
 
@@ -260,7 +290,7 @@ When an agent encounters a task matching a skill, it reads the skill file and ru
 mcpkit call <server> <tool> '{"param": "value"}'
 ```
 
-mcpkit looks up the server transport from the registry, connects, calls the tool, and returns the result.
+mcpkit looks up the server transport from the registry, then either makes a one-shot connection or forwards the call to a configured persistent runtime, and returns the result.
 
 ## Agent Auto-Detection
 

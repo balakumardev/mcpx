@@ -12,9 +12,20 @@ import {
 } from '../agent-config.js';
 import { detectAgents } from '../generators/index.js';
 import { authenticateIfNeeded } from '../auth.js';
+import { buildRuntimeConfig } from '../runtime-config.js';
 import { reconcileSkillFiles } from '../skill-sync.js';
 import { ALL_AGENTS } from '../types.js';
-import type { AgentSelectionMode, AgentType, AuthType, OAuthConfig, ParamProviderConfig, Scope, ServerEntry, TransportConfig } from '../types.js';
+import type {
+  AgentSelectionMode,
+  AgentType,
+  AuthType,
+  OAuthConfig,
+  ParamProviderConfig,
+  Scope,
+  ServerEntry,
+  ServerRuntimeConfig,
+  TransportConfig,
+} from '../types.js';
 
 // Derive a short name from server spec
 function deriveName(input: string): string {
@@ -193,6 +204,8 @@ async function installServer(
     auth?: AuthType;
     description?: string;
     paramProvider?: string;
+    runtimeMode?: string;
+    runtimeIdleTimeout?: number;
     dryRun?: boolean;
     scope: Scope;
     agents: AgentType[];
@@ -225,6 +238,8 @@ async function installServer(
   if (opts.auth && (transport.type === 'http' || transport.type === 'sse')) {
     transport.auth = opts.auth;
   }
+
+  const runtime = buildRuntimeConfig(transport, opts.runtimeMode, opts.runtimeIdleTimeout);
 
   console.log(chalk.blue(`Connecting to server "${name}"...`));
 
@@ -271,11 +286,13 @@ async function installServer(
     const paramProvider: ParamProviderConfig | undefined = opts.paramProvider
       ? { command: opts.paramProvider }
       : undefined;
+    const runtimeConfig: ServerRuntimeConfig | undefined = runtime;
     const entry: ServerEntry = {
       name,
       transport,
       ...(opts.description ? { description: opts.description } : {}),
       ...(paramProvider ? { paramProvider } : {}),
+      ...(runtimeConfig ? { runtime: runtimeConfig } : {}),
       toolCount: tools.length,
       agents,
       agentSelectionMode: opts.agentSelectionMode,
@@ -301,6 +318,8 @@ export function createInstallCommand(): Command {
     .option('--oauth-client-id <id>', 'Pre-registered OAuth client ID (skips dynamic registration)')
     .option('--oauth-callback-port <port>', 'Fixed port for OAuth callback', parseInt)
     .option('--param-provider <command>', 'Shell command that outputs JSON to merge into every tool call\'s params (e.g. credential providers)')
+    .option('--runtime <mode>', 'Runtime mode for stdio servers (ephemeral or persistent)')
+    .option('--runtime-idle-timeout <seconds>', 'Idle timeout before a persistent stdio runtime shuts down', parseInt)
     .option('-d, --description <text>', 'Custom skill description for agent routing (overrides auto-generated)')
     .option('--scope <scope>', 'Installation scope (global or project)', 'global')
     .option('--dry-run', 'Show what would be generated without writing files')
@@ -316,7 +335,10 @@ OAuth servers (with dynamic client registration):
   $ mcpkit install https://mcp.postman.com/mcp --auth oauth -n postman
 
 OAuth servers (with pre-registered client ID):
-  $ mcpkit install https://mcp.slack.com/mcp --auth oauth --oauth-client-id 1601185624273.8899143856786 --oauth-callback-port 3118 -n slack`)
+  $ mcpkit install https://mcp.slack.com/mcp --auth oauth --oauth-client-id 1601185624273.8899143856786 --oauth-callback-port 3118 -n slack
+
+Persistent stdio runtime:
+  $ mcpkit install "npx -y @browsermcp/mcp" -n browsermcp --runtime persistent --runtime-idle-timeout 900`)
     .action(async (serverSpec: string, opts) => {
       try {
         const detectedAgents = detectAgents();
@@ -354,6 +376,8 @@ OAuth servers (with pre-registered client ID):
               auth: opts.auth,
               description: opts.description,
               paramProvider: opts.paramProvider,
+              runtimeMode: opts.runtime,
+              runtimeIdleTimeout: opts.runtimeIdleTimeout,
               dryRun: opts.dryRun,
               scope: opts.scope || 'global',
               agents: agentSelection.agents,
@@ -381,6 +405,8 @@ OAuth servers (with pre-registered client ID):
             auth: opts.auth,
             description: opts.description,
             paramProvider: opts.paramProvider,
+            runtimeMode: opts.runtime,
+            runtimeIdleTimeout: opts.runtimeIdleTimeout,
             dryRun: opts.dryRun,
             scope: opts.scope || 'global',
             agents: agentSelection.agents,

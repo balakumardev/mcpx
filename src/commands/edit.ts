@@ -3,6 +3,13 @@ import chalk from 'chalk';
 import { getServer, addServer, removeServer } from '../config.js';
 import { loadAgentSettings, normalizeAgentList, resolveServerAgents } from '../agent-config.js';
 import { getGenerator } from '../generators/index.js';
+import {
+  buildRuntimeConfig,
+  isPersistentRuntimeEntry,
+  normalizeRuntimeMode,
+  validateRuntimeIdleTimeout,
+} from '../runtime-config.js';
+import { stopRuntime } from '../runtime-manager.js';
 import { removeSkillDirectory } from '../skill-file.js';
 import { ALL_AGENTS } from '../types.js';
 import type { AgentType } from '../types.js';
@@ -23,6 +30,9 @@ export function createEditCommand(): Command {
     .option('--oauth-callback-port <port>', 'Set fixed OAuth callback port', parseInt)
     .option('--param-provider <command>', 'Set a shell command that outputs JSON to merge into tool call params')
     .option('--remove-param-provider', 'Remove the param provider')
+    .option('--runtime <mode>', 'Set runtime mode for stdio servers (ephemeral or persistent)')
+    .option('--runtime-idle-timeout <seconds>', 'Set idle timeout for persistent stdio runtimes', parseInt)
+    .option('--remove-runtime-idle-timeout', 'Clear the custom runtime idle timeout')
     .option('--description <text>', 'Set server description')
     .option('--name <new-name>', 'Rename the server')
     .addHelpText('after', `
@@ -43,7 +53,11 @@ Enable/disable OAuth:
   $ mcpkit edit postman --auth none     # Remove OAuth
 
 Pre-registered OAuth (servers without dynamic client registration):
-  $ mcpkit edit slack --oauth-client-id 1601185624273.8899143856786 --oauth-callback-port 3118`)
+  $ mcpkit edit slack --oauth-client-id 1601185624273.8899143856786 --oauth-callback-port 3118
+
+Persistent stdio runtime:
+  $ mcpkit edit browsermcp --runtime persistent --runtime-idle-timeout 900
+  $ mcpkit edit browsermcp --runtime ephemeral`)
     .action(async (name: string, opts) => {
       try {
         const entry = await getServer(name);
@@ -53,6 +67,8 @@ Pre-registered OAuth (servers without dynamic client registration):
         }
 
         let changed = false;
+        const runtimeWasPersistent = isPersistentRuntimeEntry(entry);
+        let restartRuntime = false;
         let currentAgents: AgentType[] = entry.agents;
         let trackedAgents = new Set(entry.agents);
 
@@ -148,6 +164,7 @@ Pre-registered OAuth (servers without dynamic client registration):
           entry.transport.env[key] = value;
           console.log(chalk.green(`✓ Set env ${key}`));
           changed = true;
+          restartRuntime = true;
         }
 
         // --remove-env KEY
@@ -163,6 +180,7 @@ Pre-registered OAuth (servers without dynamic client registration):
             }
             console.log(chalk.green(`✓ Removed env ${key}`));
             changed = true;
+            restartRuntime = true;
           } else {
             console.warn(chalk.yellow(`Env var "${key}" not found.`));
           }
@@ -233,11 +251,13 @@ Pre-registered OAuth (servers without dynamic client registration):
               entry.transport.oauth.clientId = opts.oauthClientId;
               console.log(chalk.green(`✓ Set OAuth client ID`));
               changed = true;
+              restartRuntime = true;
             }
             if (opts.oauthCallbackPort !== undefined) {
               entry.transport.oauth.callbackPort = opts.oauthCallbackPort;
               console.log(chalk.green(`✓ Set OAuth callback port to ${opts.oauthCallbackPort}`));
               changed = true;
+              restartRuntime = true;
             }
           }
         }
@@ -247,6 +267,7 @@ Pre-registered OAuth (servers without dynamic client registration):
           entry.paramProvider = { command: opts.paramProvider };
           console.log(chalk.green(`✓ Set param provider: ${opts.paramProvider}`));
           changed = true;
+          restartRuntime = true;
         }
 
         // --remove-param-provider
@@ -255,8 +276,52 @@ Pre-registered OAuth (servers without dynamic client registration):
             delete entry.paramProvider;
             console.log(chalk.green(`✓ Removed param provider`));
             changed = true;
+            restartRuntime = true;
           } else {
             console.warn(chalk.yellow('No param provider configured.'));
+          }
+        }
+
+        // --runtime / --runtime-idle-timeout / --remove-runtime-idle-timeout
+        if (
+          opts.runtime !== undefined
+          || opts.runtimeIdleTimeout !== undefined
+          || opts.removeRuntimeIdleTimeout
+        ) {
+          if (entry.transport.type !== 'stdio') {
+            console.error(chalk.red(`Runtime settings are only supported for stdio servers. "${name}" uses ${entry.transport.type}.`));
+            process.exit(1);
+          }
+
+          const nextMode = opts.runtime !== undefined
+            ? normalizeRuntimeMode(opts.runtime)
+            : entry.runtime?.mode ?? 'ephemeral';
+          const nextIdleTimeout = opts.removeRuntimeIdleTimeout
+            ? undefined
+            : opts.runtimeIdleTimeout !== undefined
+              ? validateRuntimeIdleTimeout(opts.runtimeIdleTimeout)
+              : entry.runtime?.idleTimeoutSec;
+          const nextRuntime = buildRuntimeConfig(entry.transport, nextMode, nextIdleTimeout);
+
+          if (JSON.stringify(entry.runtime ?? null) !== JSON.stringify(nextRuntime ?? null)) {
+            if (nextRuntime) {
+              entry.runtime = nextRuntime;
+            } else {
+              delete entry.runtime;
+            }
+
+            if (opts.runtime !== undefined) {
+              console.log(chalk.green(`✓ Set runtime mode to ${nextMode}`));
+            }
+            if (opts.runtimeIdleTimeout !== undefined) {
+              console.log(chalk.green(`✓ Set runtime idle timeout to ${nextIdleTimeout}s`));
+            } else if (opts.removeRuntimeIdleTimeout) {
+              console.log(chalk.green(`✓ Removed custom runtime idle timeout`));
+            }
+            changed = true;
+            restartRuntime = true;
+          } else {
+            console.log(chalk.yellow('Runtime settings are already up to date.'));
           }
         }
 
@@ -275,6 +340,7 @@ Pre-registered OAuth (servers without dynamic client registration):
             console.error(chalk.red(`Server "${newName}" already exists. Choose a different name.`));
             process.exit(1);
           }
+          await stopRuntime(name);
           await removeServer(name);
           entry.name = newName;
           entry.updatedAt = new Date().toISOString();
@@ -284,6 +350,9 @@ Pre-registered OAuth (servers without dynamic client registration):
         }
 
         if (changed) {
+          if (runtimeWasPersistent && restartRuntime) {
+            await stopRuntime(name);
+          }
           entry.updatedAt = new Date().toISOString();
           await addServer(entry);
         } else {

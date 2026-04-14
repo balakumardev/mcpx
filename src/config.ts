@@ -3,10 +3,18 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import chalk from 'chalk';
+import { validateRuntimeIdleTimeout } from './runtime-config.js';
 import { ALL_AGENTS } from './types.js';
-import type { AgentSelectionMode, AgentType, ServerEntry, ServerRegistry } from './types.js';
+import type {
+  AgentSelectionMode,
+  AgentType,
+  RuntimeMode,
+  ServerEntry,
+  ServerRegistry,
+} from './types.js';
 
 const VALID_AGENT_SELECTION_MODES: AgentSelectionMode[] = ['defaults', 'explicit'];
+const VALID_RUNTIME_MODES: RuntimeMode[] = ['ephemeral', 'persistent'];
 
 const DEFAULT_REGISTRY: ServerRegistry = { version: 1, servers: {} };
 const VALID_TRANSPORT_TYPES = ['stdio', 'http', 'sse'];
@@ -60,6 +68,28 @@ function validateServerEntry(name: string, entry: unknown): string | null {
     const pp = e.paramProvider as Record<string, unknown>;
     if (typeof pp.command !== 'string' || pp.command.trim() === '') {
       return '"paramProvider.command" must be a non-empty string';
+    }
+  }
+
+  if (e.runtime !== undefined) {
+    if (typeof e.runtime !== 'object' || e.runtime === null) {
+      return '"runtime" must be an object';
+    }
+    const runtime = e.runtime as Record<string, unknown>;
+    const mode = runtime.mode as RuntimeMode | undefined;
+    if (mode === undefined || !VALID_RUNTIME_MODES.includes(mode)) {
+      return `"runtime.mode" must be one of: ${VALID_RUNTIME_MODES.join(', ')}`;
+    }
+    try {
+      validateRuntimeIdleTimeout(runtime.idleTimeoutSec as number | undefined);
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
+    if (transport.type !== 'stdio' && mode === 'persistent') {
+      return '"runtime.mode" can only be "persistent" for stdio transports';
+    }
+    if (mode !== 'persistent' && runtime.idleTimeoutSec !== undefined) {
+      return '"runtime.idleTimeoutSec" can only be set when runtime.mode is "persistent"';
     }
   }
 

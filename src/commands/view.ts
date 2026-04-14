@@ -5,6 +5,7 @@ import { parse } from 'yaml';
 import { stringify } from 'yaml';
 import { getServer, getRegistryPath } from '../config.js';
 import { loadAgentSettings, resolveServerAgents } from '../agent-config.js';
+import { resolveRuntimeConfig } from '../runtime-config.js';
 
 export function createViewCommand(): Command {
   return new Command('view')
@@ -77,6 +78,13 @@ Examples:
           if (entry.paramProvider.ttl) {
             console.log(`  TTL:     ${entry.paramProvider.ttl}s`);
           }
+        }
+
+        if (entry.transport.type === 'stdio') {
+          const runtime = resolveRuntimeConfig(entry.runtime);
+          console.log(chalk.blue('\nRuntime'));
+          console.log(`  Mode:    ${runtime.mode}`);
+          console.log(`  Idle:    ${runtime.idleTimeoutSec}s`);
         }
 
         // Metadata
