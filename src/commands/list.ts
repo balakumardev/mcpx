@@ -29,7 +29,7 @@ Examples:
             : undefined;
 
           console.log(chalk.blue(`Connecting to ${server}...`));
-          const { tools, serverMeta } = await discoverTools(entry.transport, authProvider);
+          const { tools, serverMeta } = await discoverTools(entry.transport, authProvider, entry.envHints);
           console.log(chalk.bold(`\nTools on ${serverMeta.name || server} (${tools.length}):\n`));
 
           for (const tool of tools) {

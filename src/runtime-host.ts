@@ -255,7 +255,7 @@ export async function createRuntimeHostForServer(serverName: string): Promise<Ru
   const now = new Date().toISOString();
   const logPath = getRuntimeLogPath(serverName);
   await ensureRuntimeDir();
-  const session = await connectToolSession(entry.transport, undefined, entry.paramProvider);
+  const session = await connectToolSession(entry.transport, undefined, entry.paramProvider, entry.envHints);
   const logStream = createWriteStream(logPath, { flags: 'a' });
 
   const host = new RuntimeHost({

@@ -57,6 +57,14 @@ export interface ServerEntry {
   description?: string;
   paramProvider?: ParamProviderConfig;
   runtime?: ServerRuntimeConfig;
+  /**
+   * Custom hints surfaced when a `${VAR}` reference in headers/env is missing
+   * at call time. Keyed by env-var name; the value is a free-form recipe shown
+   * after the standard "Environment variable X is not set" error. Generic —
+   * the per-server config supplies whatever recipe makes sense for the server
+   * (e.g. how to mint an auth token).
+   */
+  envHints?: Record<string, string>;
   toolCount: number;
   agents: AgentType[];
   agentSelectionMode?: AgentSelectionMode;
@@ -115,4 +123,6 @@ export interface GeneratorContext {
   tools: ToolInfo[];
   transport: TransportConfig;
   scope: Scope;
+  runtime?: ServerRuntimeConfig;
+  paramProvider?: ParamProviderConfig;
 }

@@ -37,11 +37,11 @@ Examples:
             ? await authenticateIfNeeded(entry.transport.url, entry.transport.oauth)
             : undefined;
 
-          const { tools, serverMeta } = await discoverTools(entry.transport, authProvider);
+          const { tools, serverMeta } = await discoverTools(entry.transport, authProvider, entry.envHints);
           console.log(`  Found ${tools.length} tool(s)`);
           const resolved = resolveServerAgents(entry, settings);
 
-          const ctx = { serverName: entry.name, tools, transport: entry.transport, description: entry.description, serverMeta, scope: 'global' as const };
+          const ctx = { serverName: entry.name, tools, transport: entry.transport, description: entry.description, serverMeta, scope: 'global' as const, runtime: entry.runtime, paramProvider: entry.paramProvider };
           await reconcileSkillFiles({
             ctx,
             nextAgents: resolved.agents,

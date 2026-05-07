@@ -104,6 +104,56 @@ describe('createEditCommand', () => {
     expect(removeOrder).toBeLessThan(saveOrder);
   });
 
+  it('round-trips --env-hint into the saved entry', async () => {
+    const entry: ServerEntry = {
+      name: 'bulk-shopping',
+      transport: { type: 'http', url: 'https://example.com/mcp' },
+      toolCount: 2,
+      agents: ['claude-code'],
+      agentSelectionMode: 'explicit',
+      createdAt: '2026-03-24T00:00:00.000Z',
+      updatedAt: '2026-03-24T00:00:00.000Z',
+    };
+
+    vi.mocked(getServer).mockResolvedValue(structuredClone(entry));
+
+    const command = createEditCommand();
+    await command.parseAsync(
+      ['bulk-shopping', '--env-hint', 'IAM_TICKET=Run eiamcli iamticket and export'],
+      { from: 'user' },
+    );
+
+    expect(addServer).toHaveBeenCalledWith(expect.objectContaining({
+      name: 'bulk-shopping',
+      envHints: { IAM_TICKET: 'Run eiamcli iamticket and export' },
+    }));
+  });
+
+  it('removes an env hint via --remove-env-hint and clears the map when empty', async () => {
+    const entry: ServerEntry = {
+      name: 'bulk-shopping',
+      transport: { type: 'http', url: 'https://example.com/mcp' },
+      envHints: { IAM_TICKET: 'an existing recipe' },
+      toolCount: 2,
+      agents: ['claude-code'],
+      agentSelectionMode: 'explicit',
+      createdAt: '2026-03-24T00:00:00.000Z',
+      updatedAt: '2026-03-24T00:00:00.000Z',
+    };
+
+    vi.mocked(getServer).mockResolvedValue(structuredClone(entry));
+
+    const command = createEditCommand();
+    await command.parseAsync(
+      ['bulk-shopping', '--remove-env-hint', 'IAM_TICKET'],
+      { from: 'user' },
+    );
+
+    const saved = vi.mocked(addServer).mock.calls[0][0];
+    expect(saved.name).toBe('bulk-shopping');
+    expect(saved.envHints).toBeUndefined();
+  });
+
   it('updates runtime settings and stops the old runtime when needed', async () => {
     const entry: ServerEntry = {
       name: 'browsermcp',

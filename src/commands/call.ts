@@ -127,7 +127,7 @@ Persistent stdio session (leaves the local MCP server process running until Ctrl
         const isChained = calls.length > 1;
 
         if (opts.keepalive) {
-          const session = await connectToolSession(entry.transport, authProvider, entry.paramProvider);
+          const session = await connectToolSession(entry.transport, authProvider, entry.paramProvider, entry.envHints);
           try {
             const results = isChained
               ? await session.callToolsChained(calls)
@@ -141,10 +141,10 @@ Persistent stdio session (leaves the local MCP server process running until Ctrl
           const results = await callPersistentRuntime(server, entry, calls);
           writeResults(results, isChained);
         } else if (isChained) {
-          const results = await callToolsChained(entry.transport, calls, authProvider, entry.paramProvider);
+          const results = await callToolsChained(entry.transport, calls, authProvider, entry.paramProvider, entry.envHints);
           writeResults(results, true);
         } else {
-          const result = await callTool(entry.transport, tool, params, authProvider, entry.paramProvider);
+          const result = await callTool(entry.transport, tool, params, authProvider, entry.paramProvider, entry.envHints);
           writeResults([result], false);
         }
       } catch (err) {

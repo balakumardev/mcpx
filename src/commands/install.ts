@@ -193,6 +193,28 @@ function isJsonInput(input: string): boolean {
 }
 
 /**
+ * Parse a list of `KEY=hint` pairs into a Record. Returns undefined if list is empty.
+ * The `=` may appear inside the hint; only the first occurrence splits key from value.
+ */
+function parseEnvHints(pairs: string[] | undefined): Record<string, string> | undefined {
+  if (!pairs || pairs.length === 0) return undefined;
+  const hints: Record<string, string> = {};
+  for (const pair of pairs) {
+    const eqIdx = pair.indexOf('=');
+    if (eqIdx === -1) {
+      throw new Error(`Invalid --env-hint format "${pair}". Use KEY=hint.`);
+    }
+    const key = pair.slice(0, eqIdx).trim();
+    const value = pair.slice(eqIdx + 1);
+    if (!key) {
+      throw new Error(`Invalid --env-hint format "${pair}". Key is empty.`);
+    }
+    hints[key] = value;
+  }
+  return hints;
+}
+
+/**
  * Install a single server: discover tools, generate skill files, save to registry.
  */
 async function installServer(
@@ -201,6 +223,7 @@ async function installServer(
   opts: {
     env?: string[];
     header?: string[];
+    envHint?: string[];
     auth?: AuthType;
     description?: string;
     paramProvider?: string;
@@ -254,7 +277,8 @@ async function installServer(
     ? await authenticateIfNeeded(transport.url, transport.oauth)
     : undefined;
 
-  // Discover tools and server metadata
+  // Discover tools and server metadata. envHints isn't relevant here yet (no entry exists),
+  // but a future caller could thread CLI-supplied hints through if needed.
   const { tools, serverMeta } = await discoverTools(transport, authProvider);
   console.log(chalk.green(`Found ${tools.length} tool(s)${serverMeta.name ? ` on "${serverMeta.name}"` : ''}:`));
   for (const tool of tools) {
@@ -270,7 +294,11 @@ async function installServer(
   console.log();
 
   const scope: Scope = opts.scope || 'global';
-  const ctx = { serverName: name, tools, transport, description: opts.description, serverMeta, scope };
+  const paramProvider: ParamProviderConfig | undefined = opts.paramProvider
+    ? { command: opts.paramProvider }
+    : undefined;
+  const envHints = parseEnvHints(opts.envHint);
+  const ctx = { serverName: name, tools, transport, description: opts.description, serverMeta, scope, runtime, paramProvider };
   const existingEntry = await getServer(name);
   const previousAgents = existingEntry
     ? Array.from(new Set([
@@ -289,9 +317,6 @@ async function installServer(
   // Save to registry
   if (!opts.dryRun) {
     const now = new Date().toISOString();
-    const paramProvider: ParamProviderConfig | undefined = opts.paramProvider
-      ? { command: opts.paramProvider }
-      : undefined;
     const runtimeConfig: ServerRuntimeConfig | undefined = runtime;
     const entry: ServerEntry = {
       name,
@@ -299,6 +324,7 @@ async function installServer(
       ...(opts.description ? { description: opts.description } : {}),
       ...(paramProvider ? { paramProvider } : {}),
       ...(runtimeConfig ? { runtime: runtimeConfig } : {}),
+      ...(envHints ? { envHints } : {}),
       toolCount: tools.length,
       agents,
       agentSelectionMode: opts.agentSelectionMode,
@@ -320,6 +346,7 @@ export function createInstallCommand(): Command {
     .option('--interactive', 'Interactively configure default agents before installing')
     .option('-e, --env <env>', 'Environment variables (KEY=VALUE)', collect, [] as string[])
     .option('--header <header>', 'HTTP headers (Key: Value)', collect, [] as string[])
+    .option('--env-hint <KEY=hint>', 'Custom hint shown when env var KEY is missing at call time. Repeatable. Can include a multi-line shell recipe.', collect, [] as string[])
     .option('--auth <type>', 'Authentication type (oauth or none)')
     .option('--oauth-client-id <id>', 'Pre-registered OAuth client ID (skips dynamic registration)')
     .option('--oauth-callback-port <port>', 'Fixed port for OAuth callback', parseInt)
@@ -380,6 +407,7 @@ Persistent stdio runtime:
             await installServer(server.name, server.transport, {
               env: opts.env,
               header: opts.header,
+              envHint: opts.envHint,
               auth: opts.auth,
               description: opts.description,
               paramProvider: opts.paramProvider,
@@ -410,6 +438,7 @@ Persistent stdio runtime:
           await installServer(name, transport, {
             env: opts.env,
             header: opts.header,
+            envHint: opts.envHint,
             auth: opts.auth,
             description: opts.description,
             paramProvider: opts.paramProvider,

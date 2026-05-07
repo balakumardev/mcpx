@@ -80,6 +80,18 @@ Examples:
           }
         }
 
+        // Env hints (surfaced when a referenced env var is missing at call time)
+        if (entry.envHints && Object.keys(entry.envHints).length > 0) {
+          console.log(chalk.blue('\nEnv Hints'));
+          for (const [key, value] of Object.entries(entry.envHints)) {
+            const lines = value.split('\n');
+            console.log(`  ${chalk.bold(key)}:`);
+            for (const line of lines) {
+              console.log(`    ${chalk.dim(line)}`);
+            }
+          }
+        }
+
         if (entry.transport.type === 'stdio') {
           const runtime = resolveRuntimeConfig(entry.runtime);
           console.log(chalk.blue('\nRuntime'));

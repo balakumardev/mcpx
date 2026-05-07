@@ -35,6 +35,25 @@ describe('resolveEnvVars', () => {
     );
   });
 
+  it('appends configured hint to the error when env var is missing', () => {
+    const hints = { NONEXISTENT_VAR: 'Run `make-token.sh` first' };
+    expect(() => resolveEnvVars('${NONEXISTENT_VAR}', hints)).toThrow(
+      /Environment variable "NONEXISTENT_VAR" is not set[\s\S]*Hint: Run `make-token\.sh` first/,
+    );
+  });
+
+  it('does not append a hint when one is not provided for the missing var', () => {
+    const hints = { OTHER_VAR: 'unrelated hint' };
+    let captured: Error | undefined;
+    try {
+      resolveEnvVars('${NONEXISTENT_VAR}', hints);
+    } catch (err) {
+      captured = err as Error;
+    }
+    expect(captured).toBeDefined();
+    expect(captured!.message).not.toMatch(/Hint:/);
+  });
+
   it('does not resolve $VAR without braces', () => {
     expect(resolveEnvVars('$TEST_TOKEN')).toBe('$TEST_TOKEN');
   });
@@ -65,6 +84,12 @@ describe('resolveHeaders', () => {
 
   it('returns empty object for empty headers', () => {
     expect(resolveHeaders({})).toEqual({});
+  });
+
+  it('forwards hints to the underlying resolveEnvVars call', () => {
+    const headers = { Authorization: 'Bearer ${MISSING_HEADER_VAR}' };
+    const hints = { MISSING_HEADER_VAR: 'Run mint-token.sh and export the result' };
+    expect(() => resolveHeaders(headers, hints)).toThrow(/Hint: Run mint-token\.sh/);
   });
 });
 

@@ -8,6 +8,22 @@ import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import type { TransportConfig, ToolInfo, ServerMeta, ParamProviderConfig } from './types.js';
 
 /**
+ * Per-call MCP request timeout, in milliseconds. The MCP SDK defaults to 60s
+ * (DEFAULT_REQUEST_TIMEOUT_MSEC), which is far too short for long-running
+ * tools (e.g. Databricks SQL that compiles + warms a warehouse). We bump the
+ * default to 15 minutes and let users override via env var.
+ */
+const DEFAULT_CALL_TIMEOUT_MS = 900_000;
+
+function resolveCallTimeoutMs(): number {
+  const raw = process.env.MCPKIT_CALL_TIMEOUT_MS;
+  if (raw === undefined || raw === '') return DEFAULT_CALL_TIMEOUT_MS;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_CALL_TIMEOUT_MS;
+  return parsed;
+}
+
+/**
  * Replace $prev.field references in params with values from the previous tool result.
  * E.g. { "user_id": "$prev.userId" } with prevResult { userId: "abc" } → { "user_id": "abc" }
  */
@@ -113,13 +129,20 @@ export function parseServerInput(input: string): TransportConfig {
 
 /**
  * Resolve ${VAR_NAME} references in a string with values from process.env.
- * Throws if a referenced variable is not set.
+ * Throws if a referenced variable is not set. If `hints` contains an entry for
+ * the missing variable, its value is appended to the error as a "Hint:" recipe
+ * so callers (e.g. AI agents) can learn how to mint it.
  */
-export function resolveEnvVars(value: string): string {
+export function resolveEnvVars(value: string, hints?: Record<string, string>): string {
   return value.replace(/\$\{([^}]+)\}/g, (_match, varName) => {
     const resolved = process.env[varName];
     if (resolved === undefined) {
-      throw new Error(`Environment variable "${varName}" is not set. Set it with 'export ${varName}=<value>' or 'mcpkit edit <server> --env ${varName}=<value>'.`);
+      let message = `Environment variable "${varName}" is not set. Set it with 'export ${varName}=<value>' or 'mcpkit edit <server> --env ${varName}=<value>'.`;
+      const hint = hints?.[varName];
+      if (hint) {
+        message += `\n\nHint: ${hint}`;
+      }
+      throw new Error(message);
     }
     return resolved;
   });
@@ -128,10 +151,13 @@ export function resolveEnvVars(value: string): string {
 /**
  * Resolve env var references in all header values.
  */
-export function resolveHeaders(headers: Record<string, string>): Record<string, string> {
+export function resolveHeaders(
+  headers: Record<string, string>,
+  hints?: Record<string, string>,
+): Record<string, string> {
   const resolved: Record<string, string> = {};
   for (const [key, value] of Object.entries(headers)) {
-    resolved[key] = resolveEnvVars(value);
+    resolved[key] = resolveEnvVars(value, hints);
   }
   return resolved;
 }
@@ -139,10 +165,13 @@ export function resolveHeaders(headers: Record<string, string>): Record<string, 
 /**
  * Resolve env var references in all env values (for stdio transports).
  */
-function resolveEnvValues(env: Record<string, string>): Record<string, string> {
+function resolveEnvValues(
+  env: Record<string, string>,
+  hints?: Record<string, string>,
+): Record<string, string> {
   const resolved: Record<string, string> = {};
   for (const [key, value] of Object.entries(env)) {
-    resolved[key] = resolveEnvVars(value);
+    resolved[key] = resolveEnvVars(value, hints);
   }
   return resolved;
 }
@@ -181,10 +210,14 @@ export async function redirectSafeFetch(url: string | URL, init?: RequestInit): 
 /**
  * Create the appropriate MCP transport from a config object.
  */
-export function createTransport(config: TransportConfig, authProvider?: OAuthClientProvider): Transport {
+export function createTransport(
+  config: TransportConfig,
+  authProvider?: OAuthClientProvider,
+  envHints?: Record<string, string>,
+): Transport {
   switch (config.type) {
     case 'stdio': {
-      const env = config.env ? resolveEnvValues(config.env) : undefined;
+      const env = config.env ? resolveEnvValues(config.env, envHints) : undefined;
       return new StdioClientTransport({
         command: config.command,
         args: config.args,
@@ -194,7 +227,7 @@ export function createTransport(config: TransportConfig, authProvider?: OAuthCli
     }
 
     case 'http': {
-      const headers = config.headers ? resolveHeaders(config.headers) : undefined;
+      const headers = config.headers ? resolveHeaders(config.headers, envHints) : undefined;
       return new StreamableHTTPClientTransport(
         new URL(config.url),
         {
@@ -206,7 +239,7 @@ export function createTransport(config: TransportConfig, authProvider?: OAuthCli
     }
 
     case 'sse': {
-      const headers = config.headers ? resolveHeaders(config.headers) : undefined;
+      const headers = config.headers ? resolveHeaders(config.headers, envHints) : undefined;
       return new SSEClientTransport(
         new URL(config.url),
         {
@@ -336,9 +369,13 @@ async function fetchPypiDescription(packageName: string): Promise<string | undef
 /**
  * Connect to an MCP server, list its tools, then disconnect.
  */
-export async function discoverTools(config: TransportConfig, authProvider?: OAuthClientProvider): Promise<DiscoveryResult> {
+export async function discoverTools(
+  config: TransportConfig,
+  authProvider?: OAuthClientProvider,
+  envHints?: Record<string, string>,
+): Promise<DiscoveryResult> {
   const client = new Client({ name: 'mcpkit', version: __PKG_VERSION__ });
-  const transport = createTransport(config, authProvider);
+  const transport = createTransport(config, authProvider, envHints);
 
   try {
     await client.connect(transport);
@@ -412,9 +449,10 @@ export async function connectToolSession(
   config: TransportConfig,
   authProvider?: OAuthClientProvider,
   paramProvider?: ParamProviderConfig,
+  envHints?: Record<string, string>,
 ): Promise<ConnectedToolSession> {
   const client = new Client({ name: 'mcpkit', version: __PKG_VERSION__ });
-  const transport = createTransport(config, authProvider);
+  const transport = createTransport(config, authProvider, envHints);
   let closePromise: Promise<void> | undefined;
 
   const close = (): Promise<void> => {
@@ -422,10 +460,16 @@ export async function connectToolSession(
     return closePromise;
   };
 
+  const callTimeoutMs = resolveCallTimeoutMs();
+
   const callSingleTool = async (toolName: string, params: Record<string, unknown>): Promise<string> => {
     const injectedParams = paramProvider ? await runParamProvider(paramProvider) : {};
     const finalParams = paramProvider ? mergeParams(params, injectedParams) : params;
-    const result = await client.callTool({ name: toolName, arguments: finalParams });
+    const result = await client.callTool(
+      { name: toolName, arguments: finalParams },
+      undefined,
+      { timeout: callTimeoutMs },
+    );
     return extractResultText(result as Record<string, unknown>);
   };
 
@@ -449,7 +493,11 @@ export async function connectToolSession(
       for (const { toolName, params } of calls) {
         const resolvedParams = substituteRefs(params, prevResult);
         const finalParams = paramProvider ? mergeParams(resolvedParams, injectedParams) : resolvedParams;
-        const result = await client.callTool({ name: toolName, arguments: finalParams });
+        const result = await client.callTool(
+          { name: toolName, arguments: finalParams },
+          undefined,
+          { timeout: callTimeoutMs },
+        );
         const text = extractResultText(result as Record<string, unknown>);
 
         // Parse result as JSON for $prev substitution in subsequent calls
@@ -476,8 +524,9 @@ export async function callTool(
   params: Record<string, unknown>,
   authProvider?: OAuthClientProvider,
   paramProvider?: ParamProviderConfig,
+  envHints?: Record<string, string>,
 ): Promise<string> {
-  const session = await connectToolSession(config, authProvider, paramProvider);
+  const session = await connectToolSession(config, authProvider, paramProvider, envHints);
 
   try {
     return await session.callTool(toolName, params);
@@ -497,8 +546,9 @@ export async function callToolsChained(
   calls: ToolCall[],
   authProvider?: OAuthClientProvider,
   paramProvider?: ParamProviderConfig,
+  envHints?: Record<string, string>,
 ): Promise<string[]> {
-  const session = await connectToolSession(config, authProvider, paramProvider);
+  const session = await connectToolSession(config, authProvider, paramProvider, envHints);
 
   try {
     return await session.callToolsChained(calls);

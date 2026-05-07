@@ -23,6 +23,8 @@ export function createEditCommand(): Command {
     .option('--remove-env <KEY>', 'Remove an env var (stdio only)', collect, [])
     .option('--header <Key: Value>', 'Add/update a header (http/sse only)', collect, [])
     .option('--remove-header <KEY>', 'Remove a header (http/sse only)', collect, [])
+    .option('--env-hint <KEY=hint>', 'Add/update a hint shown when env var KEY is missing at call time', collect, [])
+    .option('--remove-env-hint <KEY>', 'Remove an env hint', collect, [])
     .option('--add-agent <agent>', `Add an agent (${ALL_AGENTS.join(', ')})`, collect, [])
     .option('--remove-agent <agent>', `Remove an agent (${ALL_AGENTS.join(', ')})`, collect, [])
     .option('--use-defaults', 'Use global default agents instead of explicit list')
@@ -60,7 +62,11 @@ Pre-registered OAuth (servers without dynamic client registration):
 
 Persistent stdio runtime:
   $ mcpkit edit browsermcp --runtime persistent --runtime-idle-timeout 900 --runtime-call-timeout 3600
-  $ mcpkit edit browsermcp --runtime ephemeral`)
+  $ mcpkit edit browsermcp --runtime ephemeral
+
+Env hints (shown when a referenced env var is missing at call time):
+  $ mcpkit edit myserver --env-hint "API_KEY=Get one at https://example.com/keys"
+  $ mcpkit edit myserver --remove-env-hint API_KEY`)
     .action(async (name: string, opts) => {
       try {
         const entry = await getServer(name);
@@ -223,6 +229,39 @@ Persistent stdio runtime:
             changed = true;
           } else {
             console.warn(chalk.yellow(`Header "${key}" not found.`));
+          }
+        }
+
+        // --env-hint KEY=hint
+        for (const pair of opts.envHint as string[]) {
+          const eqIdx = pair.indexOf('=');
+          if (eqIdx === -1) {
+            console.error(chalk.red(`Invalid env-hint format "${pair}". Use KEY=hint.`));
+            process.exit(1);
+          }
+          const key = pair.slice(0, eqIdx).trim();
+          const value = pair.slice(eqIdx + 1);
+          if (!key) {
+            console.error(chalk.red(`Invalid env-hint format "${pair}". Key is empty.`));
+            process.exit(1);
+          }
+          entry.envHints = entry.envHints || {};
+          entry.envHints[key] = value;
+          console.log(chalk.green(`✓ Set env hint ${key}`));
+          changed = true;
+        }
+
+        // --remove-env-hint KEY
+        for (const key of opts.removeEnvHint as string[]) {
+          if (entry.envHints && key in entry.envHints) {
+            delete entry.envHints[key];
+            if (Object.keys(entry.envHints).length === 0) {
+              delete entry.envHints;
+            }
+            console.log(chalk.green(`✓ Removed env hint ${key}`));
+            changed = true;
+          } else {
+            console.warn(chalk.yellow(`Env hint "${key}" not found.`));
           }
         }
 
