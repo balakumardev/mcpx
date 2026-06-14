@@ -6,6 +6,7 @@ import { discoverTools } from '../client.js';
 import { loadAgentSettings, resolveServerAgents } from '../agent-config.js';
 import { getGenerator } from '../generators/index.js';
 import { reconcileSkillFiles } from '../skill-sync.js';
+import { writeMetaSkill } from '../meta-skill.js';
 import { authenticateIfNeeded } from '../auth.js';
 import type { AgentType, ServerEntry } from '../types.js';
 
@@ -51,10 +52,12 @@ Examples:
 
         let synced = 0;
         let skipped = 0;
+        const metaAgents = new Set<AgentType>();
 
         for (const entry of servers) {
           try {
             const resolved = resolveServerAgents(entry, settings);
+            for (const agent of resolved.agents) metaAgents.add(agent);
 
             // Check if skill files already exist
             const sameAgents = entry.agents.length === resolved.agents.length
@@ -98,6 +101,16 @@ Examples:
           } catch (err) {
             console.warn(chalk.yellow(`  ⚠ ${entry.name}: ${err instanceof Error ? err.message : err}`));
           }
+        }
+
+        // Refresh the mcpkit-cli meta-skill for every agent these servers target.
+        if (metaAgents.size > 0) {
+          await writeMetaSkill({
+            agents: [...metaAgents],
+            scope: 'global',
+            dryRun: opts?.dryRun,
+            logPrefix: '  ',
+          });
         }
 
         if (synced > 0) {

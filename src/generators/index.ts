@@ -327,6 +327,7 @@ export async function getGenerator(agent: AgentType): Promise<(ctx: GeneratorCon
     case 'windsurf': return (await import('./windsurf.js')).generate;
     case 'augment': return (await import('./augment.js')).generate;
     case 'openclaw': return (await import('./openclaw.js')).generate;
+    case 'hermes': return (await import('./hermes.js')).generate;
   }
 }
 
@@ -341,6 +342,7 @@ export function detectAgents(): AgentType[] {
   if (existsSync(join(process.cwd(), '.windsurf')) || existsSync(join(home, '.codeium'))) agents.push('windsurf');
   if (existsSync(join(home, '.augment')) || existsSync(join(process.cwd(), '.augment'))) agents.push('augment');
   if (existsSync(join(home, '.openclaw'))) agents.push('openclaw');
+  if (existsSync(process.env.HERMES_HOME || join(home, '.hermes'))) agents.push('hermes');
 
   return agents;
 }

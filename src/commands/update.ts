@@ -5,6 +5,8 @@ import { discoverTools } from '../client.js';
 import { authenticateIfNeeded } from '../auth.js';
 import { loadAgentSettings, resolveServerAgents } from '../agent-config.js';
 import { reconcileSkillFiles } from '../skill-sync.js';
+import { writeMetaSkill } from '../meta-skill.js';
+import type { AgentType } from '../types.js';
 
 export function createUpdateCommand(): Command {
   return new Command('update')
@@ -28,6 +30,7 @@ Examples:
           return;
         }
 
+        const metaAgents = new Set<AgentType>();
         for (const entry of servers) {
           if (!entry) continue;
           console.log(chalk.blue(`Updating ${entry.name}...`));
@@ -40,6 +43,7 @@ Examples:
           const { tools, serverMeta } = await discoverTools(entry.transport, authProvider, entry.envHints);
           console.log(`  Found ${tools.length} tool(s)`);
           const resolved = resolveServerAgents(entry, settings);
+          for (const agent of resolved.agents) metaAgents.add(agent);
 
           const ctx = { serverName: entry.name, tools, transport: entry.transport, description: entry.description, serverMeta, scope: 'global' as const, runtime: entry.runtime, paramProvider: entry.paramProvider };
           await reconcileSkillFiles({
@@ -54,6 +58,11 @@ Examples:
           entry.agentSelectionMode = resolved.selectionMode;
           entry.updatedAt = new Date().toISOString();
           await addServer(entry);
+        }
+
+        // Refresh the mcpkit-cli meta-skill for every agent these servers target.
+        if (metaAgents.size > 0) {
+          await writeMetaSkill({ agents: [...metaAgents], scope: 'global', logPrefix: '  ' });
         }
 
         console.log(chalk.green(`\n✓ Updated ${servers.length} server(s)`));

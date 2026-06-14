@@ -85,9 +85,9 @@ export interface ToolInfo {
 }
 
 // Agent types
-export type AgentType = 'claude-code' | 'cursor' | 'codex' | 'windsurf' | 'augment' | 'openclaw';
+export type AgentType = 'claude-code' | 'cursor' | 'codex' | 'windsurf' | 'augment' | 'openclaw' | 'hermes';
 
-export const ALL_AGENTS: AgentType[] = ['claude-code', 'cursor', 'codex', 'windsurf', 'augment', 'openclaw'];
+export const ALL_AGENTS: AgentType[] = ['claude-code', 'cursor', 'codex', 'windsurf', 'augment', 'openclaw', 'hermes'];
 
 export type AgentSelectionMode = 'defaults' | 'explicit';
 

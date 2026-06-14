@@ -14,6 +14,7 @@ import { detectAgents } from '../generators/index.js';
 import { authenticateIfNeeded } from '../auth.js';
 import { buildRuntimeConfig } from '../runtime-config.js';
 import { reconcileSkillFiles } from '../skill-sync.js';
+import { writeMetaSkill } from '../meta-skill.js';
 import { ALL_AGENTS } from '../types.js';
 import type {
   AgentSelectionMode,
@@ -453,6 +454,13 @@ Persistent stdio runtime:
             settingsLoaded: agentSelection.settingsToSave ?? settings,
           });
         }
+
+        // Refresh the mcpkit-cli meta-skill once per install, for the same agents.
+        await writeMetaSkill({
+          agents: agentSelection.agents,
+          scope: opts.scope || 'global',
+          dryRun: opts.dryRun,
+        });
       } catch (err) {
         console.error(chalk.red(`Error: ${err instanceof Error ? err.message : err}`));
         process.exit(1);

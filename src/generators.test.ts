@@ -32,6 +32,7 @@ describe('generators', () => {
     vi.clearAllMocks();
     homedir.mockReturnValue('/tmp/home');
     existsSync.mockReturnValue(false);
+    delete process.env.HERMES_HOME;
   });
 
   it('detects OpenClaw when ~/.openclaw exists', async () => {
@@ -54,6 +55,44 @@ describe('generators', () => {
 
     expect(generate({ ...ctx, scope: 'project' }).filePath)
       .toBe(`${process.cwd()}/skills/mcpkit-github/SKILL.md`);
+  });
+
+  it('detects Hermes when ~/.hermes exists', async () => {
+    const { detectAgents } = await import('./generators/index.js');
+    existsSync.mockImplementation((path) => path === '/tmp/home/.hermes');
+
+    expect(detectAgents()).toEqual(['hermes']);
+  });
+
+  it('detects Hermes via the HERMES_HOME override', async () => {
+    const { detectAgents } = await import('./generators/index.js');
+    process.env.HERMES_HOME = '/custom/hermes';
+    existsSync.mockImplementation((path) => path === '/custom/hermes');
+
+    expect(detectAgents()).toEqual(['hermes']);
+  });
+
+  it('generates Hermes global skills in ~/.hermes/skills', async () => {
+    const { getGenerator } = await import('./generators/index.js');
+    const generate = await getGenerator('hermes');
+
+    expect(generate(ctx).filePath).toBe('/tmp/home/.hermes/skills/mcpkit-github/SKILL.md');
+  });
+
+  it('honors HERMES_HOME for global Hermes skills', async () => {
+    const { getGenerator } = await import('./generators/index.js');
+    process.env.HERMES_HOME = '/custom/hermes';
+    const generate = await getGenerator('hermes');
+
+    expect(generate(ctx).filePath).toBe('/custom/hermes/skills/mcpkit-github/SKILL.md');
+  });
+
+  it('generates Hermes project skills in workspace .hermes/skills', async () => {
+    const { getGenerator } = await import('./generators/index.js');
+    const generate = await getGenerator('hermes');
+
+    expect(generate({ ...ctx, scope: 'project' }).filePath)
+      .toBe(`${process.cwd()}/.hermes/skills/mcpkit-github/SKILL.md`);
   });
 
   it('includes mcpkit usage guidance in generated skill content', async () => {
