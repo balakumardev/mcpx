@@ -231,6 +231,8 @@ async function installServer(
     runtimeMode?: string;
     runtimeIdleTimeout?: number;
     runtimeCallTimeout?: number;
+    autoRefresh?: boolean;
+    autoRefreshTtl?: number;
     dryRun?: boolean;
     scope: Scope;
     agents: AgentType[];
@@ -319,6 +321,13 @@ async function installServer(
   if (!opts.dryRun) {
     const now = new Date().toISOString();
     const runtimeConfig: ServerRuntimeConfig | undefined = runtime;
+    const autoRefresh = opts.autoRefresh
+      ? {
+          enabled: true,
+          ...(opts.autoRefreshTtl !== undefined ? { ttlSec: opts.autoRefreshTtl } : {}),
+          lastRefreshedAt: now,
+        }
+      : undefined;
     const entry: ServerEntry = {
       name,
       transport,
@@ -326,6 +335,7 @@ async function installServer(
       ...(paramProvider ? { paramProvider } : {}),
       ...(runtimeConfig ? { runtime: runtimeConfig } : {}),
       ...(envHints ? { envHints } : {}),
+      ...(autoRefresh ? { autoRefresh } : {}),
       toolCount: tools.length,
       agents,
       agentSelectionMode: opts.agentSelectionMode,
@@ -334,6 +344,9 @@ async function installServer(
     };
     await addServer(entry);
     console.log(chalk.green(`\n✓ Server "${name}" installed with ${tools.length} tools for ${agents.join(', ')} (scope: ${scope})`));
+    if (autoRefresh) {
+      console.log(chalk.dim(`  auto-refresh enabled (skill regenerates on stale calls)`));
+    }
   }
 }
 
@@ -355,6 +368,8 @@ export function createInstallCommand(): Command {
     .option('--runtime <mode>', 'Runtime mode for stdio servers (ephemeral or persistent)')
     .option('--runtime-idle-timeout <seconds>', 'Idle timeout before a persistent stdio runtime shuts down', parseInt)
     .option('--runtime-call-timeout <seconds>', 'Per-call timeout for persistent stdio runtimes', parseInt)
+    .option('--auto-refresh', 'Auto re-discover tools + regenerate the skill on stale calls (for dynamic servers)')
+    .option('--auto-refresh-ttl <seconds>', 'Staleness window before an auto-refresh triggers (default: 86400)', parseInt)
     .option('-d, --description <text>', 'Custom skill description for agent routing (overrides auto-generated)')
     .option('--scope <scope>', 'Installation scope (global or project)', 'global')
     .option('--dry-run', 'Show what would be generated without writing files')
@@ -415,6 +430,8 @@ Persistent stdio runtime:
           runtimeMode: opts.runtime,
           runtimeIdleTimeout: opts.runtimeIdleTimeout,
           runtimeCallTimeout: opts.runtimeCallTimeout,
+              autoRefresh: opts.autoRefresh,
+              autoRefreshTtl: opts.autoRefreshTtl,
               dryRun: opts.dryRun,
               scope: opts.scope || 'global',
               agents: agentSelection.agents,
@@ -446,6 +463,8 @@ Persistent stdio runtime:
             runtimeMode: opts.runtime,
             runtimeIdleTimeout: opts.runtimeIdleTimeout,
             runtimeCallTimeout: opts.runtimeCallTimeout,
+            autoRefresh: opts.autoRefresh,
+            autoRefreshTtl: opts.autoRefreshTtl,
             dryRun: opts.dryRun,
             scope: opts.scope || 'global',
             agents: agentSelection.agents,

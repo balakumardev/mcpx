@@ -6,6 +6,11 @@ export type RuntimeMode = 'ephemeral' | 'persistent';
 export const DEFAULT_RUNTIME_IDLE_TIMEOUT_SEC = 15 * 60;
 export const DEFAULT_RUNTIME_CALL_TIMEOUT_SEC = 30 * 60;
 
+// Default staleness window for auto-refresh: re-discover tools + regenerate the
+// skill file if the last discovery is older than this. Suits dynamic servers
+// (aggregators/proxies whose tool list changes over time, e.g. DAST orchestrator).
+export const DEFAULT_AUTO_REFRESH_TTL_SEC = 24 * 60 * 60;
+
 export interface OAuthConfig {
   clientId?: string;
   clientSecret?: string;
@@ -50,6 +55,16 @@ export interface ServerRuntimeConfig {
   callTimeoutSec?: number;
 }
 
+// Auto-refresh — for dynamic servers whose tool set drifts over time. When
+// enabled, `mcpkit call` re-discovers tools and regenerates skill files in the
+// background if the last discovery is older than `ttlSec`. The refresh is
+// best-effort: a discovery failure never blocks or fails the actual tool call.
+export interface AutoRefreshConfig {
+  enabled: boolean;
+  ttlSec?: number;         // staleness window (default: DEFAULT_AUTO_REFRESH_TTL_SEC)
+  lastRefreshedAt?: string; // ISO timestamp of last successful discovery
+}
+
 // Registry types
 export interface ServerEntry {
   name: string;
@@ -65,6 +80,7 @@ export interface ServerEntry {
    * (e.g. how to mint an auth token).
    */
   envHints?: Record<string, string>;
+  autoRefresh?: AutoRefreshConfig;
   toolCount: number;
   agents: AgentType[];
   agentSelectionMode?: AgentSelectionMode;

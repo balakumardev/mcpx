@@ -1,10 +1,7 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
-import { getServer, listServers, addServer } from '../config.js';
-import { discoverTools } from '../client.js';
-import { authenticateIfNeeded } from '../auth.js';
-import { loadAgentSettings, resolveServerAgents } from '../agent-config.js';
-import { reconcileSkillFiles } from '../skill-sync.js';
+import { getServer, listServers } from '../config.js';
+import { refreshServer } from '../auto-refresh.js';
 import { writeMetaSkill } from '../meta-skill.js';
 import type { AgentType } from '../types.js';
 
@@ -18,7 +15,6 @@ Examples:
   $ mcpkit update github         Update a specific server`)
     .action(async (name?: string) => {
       try {
-        const settings = await loadAgentSettings();
         const servers = name ? [await getServer(name)].filter(Boolean) : await listServers();
 
         if (servers.length === 0) {
@@ -34,30 +30,9 @@ Examples:
         for (const entry of servers) {
           if (!entry) continue;
           console.log(chalk.blue(`Updating ${entry.name}...`));
-
-          // If OAuth, authenticate first
-          const authProvider = (entry.transport.type === 'http' || entry.transport.type === 'sse') && entry.transport.auth === 'oauth'
-            ? await authenticateIfNeeded(entry.transport.url, entry.transport.oauth)
-            : undefined;
-
-          const { tools, serverMeta } = await discoverTools(entry.transport, authProvider, entry.envHints);
-          console.log(`  Found ${tools.length} tool(s)`);
-          const resolved = resolveServerAgents(entry, settings);
-          for (const agent of resolved.agents) metaAgents.add(agent);
-
-          const ctx = { serverName: entry.name, tools, transport: entry.transport, description: entry.description, serverMeta, scope: 'global' as const, runtime: entry.runtime, paramProvider: entry.paramProvider };
-          await reconcileSkillFiles({
-            ctx,
-            nextAgents: resolved.agents,
-            previousAgents: entry.agents,
-            logPrefix: '  ',
-          });
-
-          entry.toolCount = tools.length;
-          entry.agents = resolved.agents;
-          entry.agentSelectionMode = resolved.selectionMode;
-          entry.updatedAt = new Date().toISOString();
-          await addServer(entry);
+          const { toolCount, agents } = await refreshServer(entry, { logPrefix: '  ' });
+          console.log(`  Found ${toolCount} tool(s)`);
+          for (const agent of agents) metaAgents.add(agent);
         }
 
         // Refresh the mcpkit-cli meta-skill for every agent these servers target.

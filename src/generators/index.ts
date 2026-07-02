@@ -26,16 +26,25 @@ export function buildCallCommand(serverName: string, toolName: string): string {
 }
 
 /**
+ * Group tools by their name prefix (the segment before the first _ or -).
+ * Returns prefixes sorted by tool count, descending. e.g. for a server with
+ * e2e_*, create_*, deploy_* tools → [['e2e', 40], ['create', 8], ...].
+ */
+function domainCounts(tools: ToolInfo[]): Array<[string, number]> {
+  const counts: Record<string, number> = {};
+  for (const tool of tools) {
+    const prefix = tool.name.split(/[_-]/)[0];
+    if (prefix) counts[prefix] = (counts[prefix] || 0) + 1;
+  }
+  return Object.entries(counts).sort((a, b) => b[1] - a[1]);
+}
+
+/**
  * Infer the primary domain from tool name prefixes.
  * e.g., tools named browser_navigate, browser_click → "browser"
  */
 function inferDomain(tools: ToolInfo[]): string {
-  const prefixCounts: Record<string, number> = {};
-  for (const tool of tools) {
-    const prefix = tool.name.split(/[_-]/)[0];
-    if (prefix) prefixCounts[prefix] = (prefixCounts[prefix] || 0) + 1;
-  }
-  const sorted = Object.entries(prefixCounts).sort((a, b) => b[1] - a[1]);
+  const sorted = domainCounts(tools);
   // Use dominant prefix if it covers >40% of tools
   if (sorted.length > 0 && sorted[0][1] > tools.length * 0.4) {
     return sorted[0][0];
@@ -44,25 +53,59 @@ function inferDomain(tools: ToolInfo[]): string {
 }
 
 /**
- * Build a short capability summary from tool descriptions.
- * Extracts the core action from each description (first clause only).
- * Returns concise phrases like "navigate pages, click elements, type text".
+ * For multi-domain servers (no single dominant prefix), list the top few
+ * prefixes so the routing description signals breadth. Returns a phrase like
+ * "e2e, create, deploy" or '' if there aren't multiple meaningful groups.
  */
-function buildCapabilitySummary(tools: ToolInfo[], maxItems = 6): string {
-  const descriptions = tools
-    .filter(t => t.description)
-    .map(t => {
-      const desc = t.description.toLowerCase();
-      // Take just the first clause — stop at period, semicolon, or "use this"
-      const match = desc.match(/^([^.;!]+?)(?:\.|;|$)/);
-      return (match ? match[1] : desc).trim().replace(/\.$/, '');
-    })
-    // Deduplicate similar descriptions
-    .filter((desc, i, arr) => arr.indexOf(desc) === i);
+function topDomains(tools: ToolInfo[], max = 5): string {
+  const sorted = domainCounts(tools).filter(([, n]) => n >= 2);
+  if (sorted.length < 2) return '';
+  return sorted.slice(0, max).map(([p]) => p).join(', ');
+}
 
-  if (descriptions.length === 0) return '';
+/**
+ * Extract the core action from a tool description (first clause, lowercased).
+ */
+function coreAction(desc: string): string {
+  const lower = desc.toLowerCase();
+  const match = lower.match(/^([^.;!]+?)(?:\.|;|$)/);
+  return (match ? match[1] : lower).trim().replace(/\.$/, '');
+}
 
-  return descriptions.slice(0, maxItems).join(', ');
+/**
+ * Build a short capability summary from tool descriptions.
+ *
+ * Samples evenly across the whole tool list (not just the first N, which for a
+ * large alphabetically-ordered server would only surface one corner of it), so
+ * the summary reflects the server's full breadth. Item count scales with the
+ * number of tools.
+ */
+function buildCapabilitySummary(tools: ToolInfo[]): string {
+  const withDesc = tools.filter(t => t.description);
+  if (withDesc.length === 0) return '';
+
+  // Scale how many phrases we surface with the tool count.
+  const maxItems = withDesc.length > 60 ? 12 : withDesc.length > 20 ? 9 : 6;
+
+  // Stride-sample across the full list so we don't bias to alphabetical head.
+  const stride = Math.max(1, Math.floor(withDesc.length / (maxItems * 2)));
+  const sampled: ToolInfo[] = [];
+  for (let i = 0; i < withDesc.length && sampled.length < maxItems * 2; i += stride) {
+    sampled.push(withDesc[i]);
+  }
+
+  const seen = new Set<string>();
+  const phrases: string[] = [];
+  for (const t of sampled) {
+    const action = coreAction(t.description);
+    // Skip near-duplicates and overlong clauses (poor routing signal).
+    if (!action || action.length > 60 || seen.has(action)) continue;
+    seen.add(action);
+    phrases.push(action);
+    if (phrases.length >= maxItems) break;
+  }
+
+  return phrases.join(', ');
 }
 
 /**
@@ -83,28 +126,56 @@ function buildFrontmatterDescription(ctx: GeneratorContext): string {
   const serverName = ctx.serverMeta?.name || ctx.serverName;
   const domain = inferDomain(ctx.tools) || serverName;
   const capabilities = buildCapabilitySummary(ctx.tools);
+  const domains = topDomains(ctx.tools);
+
+  // A "work with" clause that reflects breadth: for multi-domain servers list
+  // the top prefixes so the router matches more intents; else the single domain.
+  const worksWith = domains
+    ? `Use this for tasks involving ${domains}.`
+    : `Use this when you need to work with ${domain}.`;
+
+  // Proxy/bridge packages (mcp-remote, supergateway, etc.) describe the transport
+  // shim, NOT the tools behind it — useless for routing. Detect and lead with the
+  // tool-derived signal instead.
+  const isProxyPackage = ctx.serverMeta?.packageDescription
+    ? /\b(proxy|bridge|gateway|remote proxy|stdio.*http|http.*stdio)\b/i.test(ctx.serverMeta.packageDescription)
+    : false;
 
   // 2. MCP server instructions
   if (ctx.serverMeta?.instructions) {
     const instructions = ctx.serverMeta.instructions.replace(/\n/g, ' ').trim();
-    return `${serverName} via mcpkit — ${instructions}`;
+    return clampDescription(`${serverName} via mcpkit — ${instructions}`);
   }
 
-  // 3. npm package description — enrich with capabilities
-  if (ctx.serverMeta?.packageDescription) {
+  // 3. npm package description — enrich with capabilities + domain breadth.
+  //    Skipped for proxy/bridge packages (their description describes the shim).
+  if (ctx.serverMeta?.packageDescription && !isProxyPackage) {
     const npmDesc = ctx.serverMeta.packageDescription;
     if (capabilities) {
-      return `${npmDesc} via mcpkit — ${capabilities}. Use this when you need to work with ${domain}.`;
+      return clampDescription(`${npmDesc} via mcpkit — ${capabilities}. ${worksWith}`);
     }
-    return `${npmDesc} via mcpkit. Use this when you need to work with ${domain}.`;
+    return clampDescription(`${npmDesc} via mcpkit. ${worksWith}`);
   }
 
-  // 4. Auto-generated from tool metadata
+  // 4. Auto-generated from tool metadata (also the path for proxy-fronted servers)
   if (capabilities) {
-    return `${capitalize(domain)} tools via mcpkit — ${capabilities}. Use this when you need to work with ${domain}.`;
+    return clampDescription(`${capitalize(domain)} tools via mcpkit — ${capabilities}. ${worksWith}`);
   }
 
-  return `${capitalize(domain)} tools via mcpkit. Use this when you need to work with ${domain}.`;
+  return clampDescription(`${capitalize(domain)} tools via mcpkit. ${worksWith}`);
+}
+
+/**
+ * Keep the routing description to a sane length. Skill listings truncate long
+ * descriptions; an over-long line wastes the budget and buries the routing
+ * signal. Trims at a clause boundary near the cap.
+ */
+function clampDescription(desc: string, max = 400): string {
+  const flat = desc.replace(/\s+/g, ' ').trim();
+  if (flat.length <= max) return flat;
+  const head = flat.slice(0, max);
+  const lastBreak = Math.max(head.lastIndexOf('. '), head.lastIndexOf(', '));
+  return (lastBreak > max * 0.6 ? head.slice(0, lastBreak) : head.trimEnd()) + '…';
 }
 
 function capitalize(s: string): string {

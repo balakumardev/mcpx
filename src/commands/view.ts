@@ -6,6 +6,7 @@ import { stringify } from 'yaml';
 import { getServer, getRegistryPath } from '../config.js';
 import { loadAgentSettings, resolveServerAgents } from '../agent-config.js';
 import { resolveRuntimeConfig } from '../runtime-config.js';
+import { DEFAULT_AUTO_REFRESH_TTL_SEC } from '../types.js';
 
 export function createViewCommand(): Command {
   return new Command('view')
@@ -98,6 +99,19 @@ Examples:
           console.log(`  Mode:    ${runtime.mode}`);
           console.log(`  Idle:    ${runtime.idleTimeoutSec}s`);
           console.log(`  Call:    ${runtime.callTimeoutSec}s`);
+        }
+
+        // Auto-refresh (skill regeneration for dynamic servers)
+        console.log(chalk.blue('\nAuto-refresh'));
+        if (entry.autoRefresh?.enabled) {
+          const ttl = entry.autoRefresh.ttlSec ?? DEFAULT_AUTO_REFRESH_TTL_SEC;
+          console.log(`  Enabled: yes`);
+          console.log(`  TTL:     ${ttl}s`);
+          if (entry.autoRefresh.lastRefreshedAt) {
+            console.log(`  Last:    ${entry.autoRefresh.lastRefreshedAt}`);
+          }
+        } else {
+          console.log(`  Enabled: no ${chalk.dim('(enable with `mcpkit edit ' + name + ' --auto-refresh`)')}`);
         }
 
         // Metadata

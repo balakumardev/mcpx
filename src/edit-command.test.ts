@@ -38,6 +38,68 @@ describe('createEditCommand', () => {
     vi.clearAllMocks();
   });
 
+  it('enables auto-refresh via --auto-refresh', async () => {
+    const entry: ServerEntry = {
+      name: 'dast-orch',
+      transport: { type: 'stdio', command: 'npx', args: [] },
+      toolCount: 194,
+      agents: ['claude-code'],
+      agentSelectionMode: 'explicit',
+      createdAt: '2026-03-24T00:00:00.000Z',
+      updatedAt: '2026-03-24T00:00:00.000Z',
+    };
+    vi.mocked(getServer).mockResolvedValue(structuredClone(entry));
+
+    const command = createEditCommand();
+    await command.parseAsync(['dast-orch', '--auto-refresh'], { from: 'user' });
+
+    expect(addServer).toHaveBeenCalledWith(expect.objectContaining({
+      name: 'dast-orch',
+      autoRefresh: expect.objectContaining({ enabled: true }),
+    }));
+  });
+
+  it('sets a custom TTL and implicitly enables auto-refresh via --auto-refresh-ttl', async () => {
+    const entry: ServerEntry = {
+      name: 'dast-orch',
+      transport: { type: 'stdio', command: 'npx', args: [] },
+      toolCount: 194,
+      agents: ['claude-code'],
+      agentSelectionMode: 'explicit',
+      createdAt: '2026-03-24T00:00:00.000Z',
+      updatedAt: '2026-03-24T00:00:00.000Z',
+    };
+    vi.mocked(getServer).mockResolvedValue(structuredClone(entry));
+
+    const command = createEditCommand();
+    await command.parseAsync(['dast-orch', '--auto-refresh-ttl', '3600'], { from: 'user' });
+
+    expect(addServer).toHaveBeenCalledWith(expect.objectContaining({
+      autoRefresh: expect.objectContaining({ enabled: true, ttlSec: 3600 }),
+    }));
+  });
+
+  it('disables auto-refresh via --disable-auto-refresh', async () => {
+    const entry: ServerEntry = {
+      name: 'dast-orch',
+      transport: { type: 'stdio', command: 'npx', args: [] },
+      toolCount: 194,
+      agents: ['claude-code'],
+      agentSelectionMode: 'explicit',
+      autoRefresh: { enabled: true, ttlSec: 3600, lastRefreshedAt: '2026-03-24T00:00:00.000Z' },
+      createdAt: '2026-03-24T00:00:00.000Z',
+      updatedAt: '2026-03-24T00:00:00.000Z',
+    };
+    vi.mocked(getServer).mockResolvedValue(structuredClone(entry));
+
+    const command = createEditCommand();
+    await command.parseAsync(['dast-orch', '--disable-auto-refresh'], { from: 'user' });
+
+    expect(addServer).toHaveBeenCalledWith(expect.objectContaining({
+      autoRefresh: expect.objectContaining({ enabled: false }),
+    }));
+  });
+
   it('seeds --add-agent from resolved defaults before switching to explicit', async () => {
     const entry: ServerEntry = {
       name: 'github',

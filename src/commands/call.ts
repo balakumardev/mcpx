@@ -6,6 +6,7 @@ import type { ToolCall } from '../client.js';
 import { authenticateIfNeeded } from '../auth.js';
 import { isPersistentRuntimeEntry } from '../runtime-config.js';
 import { callPersistentRuntime } from '../runtime-manager.js';
+import { maybeAutoRefresh } from '../auto-refresh.js';
 
 const KEEPALIVE_SIGNALS = ['SIGINT', 'SIGTERM'] as const;
 
@@ -112,6 +113,10 @@ Persistent stdio session (leaves the local MCP server process running until Ctrl
           console.error(chalk.red(`Server "${server}" not found. Run 'mcpkit list' to see registered servers.`));
           process.exit(1);
         }
+
+        // For dynamic servers: refresh the skill snapshot if stale (or nudge to
+        // update). Best-effort — never blocks or fails the call below.
+        await maybeAutoRefresh(entry);
 
         if (opts.keepalive && entry.transport.type !== 'stdio') {
           throw new Error('--keepalive is only supported for stdio transports');

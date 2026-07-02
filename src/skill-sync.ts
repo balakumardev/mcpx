@@ -9,10 +9,12 @@ export interface ReconcileSkillFilesOptions {
   previousAgents?: AgentType[];
   dryRun?: boolean;
   logPrefix?: string;
+  /** Suppress progress logging (used by background auto-refresh so it never writes to stdout). */
+  quiet?: boolean;
 }
 
 export async function reconcileSkillFiles(options: ReconcileSkillFilesOptions): Promise<void> {
-  const { ctx, nextAgents, previousAgents = [], dryRun = false, logPrefix = '' } = options;
+  const { ctx, nextAgents, previousAgents = [], dryRun = false, logPrefix = '', quiet = false } = options;
   const previousSet = new Set(previousAgents);
   const nextSet = new Set(nextAgents);
 
@@ -26,7 +28,7 @@ export async function reconcileSkillFiles(options: ReconcileSkillFilesOptions): 
       console.log();
     } else {
       await writeSkillFile(skill.filePath, skill.content);
-      console.log(chalk.green(`${logPrefix}✓ ${agent}: ${skill.filePath}`));
+      if (!quiet) console.log(chalk.green(`${logPrefix}✓ ${agent}: ${skill.filePath}`));
     }
   }
 
@@ -40,7 +42,7 @@ export async function reconcileSkillFiles(options: ReconcileSkillFilesOptions): 
       console.log(chalk.yellow(`${logPrefix}[dry-run] remove ${agent}: ${skill.filePath}`));
     } else {
       await removeSkillDirectory(skill.filePath);
-      console.log(chalk.green(`${logPrefix}✓ Removed ${agent}: ${skill.filePath}`));
+      if (!quiet) console.log(chalk.green(`${logPrefix}✓ Removed ${agent}: ${skill.filePath}`));
     }
   }
 }

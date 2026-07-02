@@ -38,6 +38,9 @@ export function createEditCommand(): Command {
     .option('--runtime-call-timeout <seconds>', 'Set per-call timeout for persistent stdio runtimes', parseInt)
     .option('--remove-runtime-idle-timeout', 'Clear the custom runtime idle timeout')
     .option('--remove-runtime-call-timeout', 'Clear the custom runtime call timeout')
+    .option('--auto-refresh', 'Enable auto re-discovery + skill regen on stale calls')
+    .option('--disable-auto-refresh', 'Disable auto-refresh')
+    .option('--auto-refresh-ttl <seconds>', 'Set the staleness window before auto-refresh triggers', parseInt)
     .option('--description <text>', 'Set server description')
     .option('--name <new-name>', 'Rename the server')
     .addHelpText('after', `
@@ -376,6 +379,40 @@ Env hints (shown when a referenced env var is missing at call time):
             restartRuntime = true;
           } else {
             console.log(chalk.yellow('Runtime settings are already up to date.'));
+          }
+        }
+
+        // --auto-refresh / --disable-auto-refresh / --auto-refresh-ttl
+        if (opts.autoRefresh || opts.disableAutoRefresh || opts.autoRefreshTtl !== undefined) {
+          if (opts.autoRefresh && opts.disableAutoRefresh) {
+            console.error(chalk.red('Cannot use --auto-refresh and --disable-auto-refresh together.'));
+            process.exit(1);
+          }
+
+          if (opts.disableAutoRefresh) {
+            if (entry.autoRefresh?.enabled) {
+              entry.autoRefresh = { ...entry.autoRefresh, enabled: false };
+              console.log(chalk.green('✓ Disabled auto-refresh'));
+              changed = true;
+            } else {
+              console.log(chalk.yellow('Auto-refresh is already disabled.'));
+            }
+          } else {
+            // Enabling and/or setting TTL. Enable implicitly when only --auto-refresh-ttl is given.
+            const enabled = opts.autoRefresh ? true : (entry.autoRefresh?.enabled ?? true);
+            const ttlSec = opts.autoRefreshTtl !== undefined
+              ? (opts.autoRefreshTtl > 0
+                  ? opts.autoRefreshTtl
+                  : (() => { console.error(chalk.red('--auto-refresh-ttl must be a positive number of seconds.')); process.exit(1); })())
+              : entry.autoRefresh?.ttlSec;
+            entry.autoRefresh = {
+              enabled,
+              ...(ttlSec !== undefined ? { ttlSec } : {}),
+              ...(entry.autoRefresh?.lastRefreshedAt ? { lastRefreshedAt: entry.autoRefresh.lastRefreshedAt } : {}),
+            };
+            if (opts.autoRefresh) console.log(chalk.green('✓ Enabled auto-refresh'));
+            if (opts.autoRefreshTtl !== undefined) console.log(chalk.green(`✓ Set auto-refresh TTL to ${ttlSec}s`));
+            changed = true;
           }
         }
 

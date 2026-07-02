@@ -188,4 +188,74 @@ describe('generators', () => {
     // Should not show empty '{}' for tools with required params
     expect(content).not.toContain(`mcpkit call github navigate '{}'`);
   });
+
+  it('samples across the whole tool list for multi-domain servers (not just alphabetical head)', async () => {
+    const { buildSkillContent } = await import('./generators/index.js');
+
+    // Model a real aggregator (like DAST): several domains, none dominant (>40%).
+    // Alphabetically-early "add_*" tools must not crowd out later domains.
+    const mk = (name: string) => ({ name, description: `${name.replace(/_/g, ' ')} action`, inputSchema: { type: 'object', properties: {} } });
+    const tools = [
+      ...Array.from({ length: 6 }, (_, i) => mk(`add_item_${i}`)),
+      ...Array.from({ length: 8 }, (_, i) => mk(`experiment_op_${i}`)),
+      ...Array.from({ length: 7 }, (_, i) => mk(`metric_op_${i}`)),
+      ...Array.from({ length: 6 }, (_, i) => mk(`route_op_${i}`)),
+      ...Array.from({ length: 5 }, (_, i) => mk(`schema_op_${i}`)),
+    ];
+
+    const content = buildSkillContent({
+      serverName: 'agg',
+      tools,
+      transport: { type: 'stdio', command: 'npx', args: [] },
+      scope: 'global',
+    });
+
+    const descLine = content.split('\n').find(l => l.startsWith('description:')) || '';
+    // Breadth signal: later domains must surface, not only alphabetically-first "add".
+    expect(descLine).toMatch(/experiment|metric|route|schema/);
+    // "Use this for tasks involving <domains>" clause lists multiple prefixes.
+    expect(content).toContain('Use this for tasks involving');
+  });
+
+  it('ignores proxy/bridge package descriptions and leads with tool signal', async () => {
+    const { buildSkillContent } = await import('./generators/index.js');
+
+    const mk = (name: string) => ({ name, description: `${name.replace(/_/g, ' ')} action`, inputSchema: { type: 'object', properties: {} } });
+    const content = buildSkillContent({
+      serverName: 'dast-orch',
+      // mcp-remote-style package metadata: describes the shim, not the tools.
+      serverMeta: { name: 'mcp-orchestrator', packageDescription: 'Remote proxy for Model Context Protocol, allowing local-only clients to connect to remote servers' },
+      tools: [
+        ...Array.from({ length: 6 }, (_, i) => mk(`experiment_op_${i}`)),
+        ...Array.from({ length: 6 }, (_, i) => mk(`metric_op_${i}`)),
+        ...Array.from({ length: 5 }, (_, i) => mk(`schema_op_${i}`)),
+      ],
+      transport: { type: 'stdio', command: 'npx', args: [] },
+      scope: 'global',
+    });
+
+    const descLine = content.split('\n').find(l => l.startsWith('description:')) || '';
+    // Should NOT lead with the proxy boilerplate…
+    expect(descLine).not.toMatch(/^description:\s*"Remote proxy/);
+    // …and SHOULD carry the real domains.
+    expect(descLine).toMatch(/experiment|metric|schema/);
+  });
+
+  it('clamps overly long frontmatter descriptions', async () => {    const { buildSkillContent } = await import('./generators/index.js');
+
+    const content = buildSkillContent({
+      serverName: 'verbose',
+      serverMeta: { name: 'verbose', instructions: 'x'.repeat(1200) },
+      tools: [{ name: 'a_do', description: 'Do a thing', inputSchema: { type: 'object', properties: {} } }],
+      transport: { type: 'stdio', command: 'npx', args: [] },
+      scope: 'global',
+    });
+
+    const descLine = content.split('\n').find(l => l.startsWith('description:')) || '';
+    // description: "<...>"  — content between quotes should be clamped (<= ~400 + ellipsis)
+    const inner = descLine.replace(/^description:\s*"/, '').replace(/"$/, '');
+    expect(inner.length).toBeLessThanOrEqual(402);
+    expect(inner.endsWith('…')).toBe(true);
+  });
 });
+
