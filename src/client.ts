@@ -217,11 +217,17 @@ export function createTransport(
 ): Transport {
   switch (config.type) {
     case 'stdio': {
-      const env = config.env ? resolveEnvValues(config.env, envHints) : undefined;
+      const env = config.env ? resolveEnvValues(config.env, envHints) : {};
+      // Always pass an explicit env. Leaving it undefined makes the MCP SDK fall
+      // back to its DEFAULT_INHERITED_ENV_VARS allowlist (HOME, LOGNAME, PATH,
+      // SHELL, TERM, USER), which silently drops LANG, TMPDIR, proxy settings and
+      // everything else, and only for servers that happen to have no env block.
+      // Servers that spawn their own subprocesses (browsers, compilers) then break
+      // in ways that look unrelated to configuration.
       return new StdioClientTransport({
         command: config.command,
         args: config.args,
-        env: env ? { ...process.env as Record<string, string>, ...env } : undefined,
+        env: { ...process.env as Record<string, string>, ...env },
         stderr: 'pipe',
       });
     }
