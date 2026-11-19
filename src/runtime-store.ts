@@ -85,13 +85,22 @@ function realPathOrSelf(path: string): string {
 }
 
 /**
+ * The runtime directory under its real path. Everything that has to agree between processes (the
+ * scope below, the socket path) is derived from this one spelling, because two processes can reach
+ * the same home through different spellings (a symlink to it, or HOME set one way by a shell and
+ * another way by a service) and must still agree about where its socket is.
+ */
+function realRuntimeDir(): string {
+  return join(realPathOrSelf(homedir()), '.mcpkit', 'runtimes');
+}
+
+/**
  * Identifies this runtime directory in the names that live outside it (the fallback socket below,
  * a Windows pipe), where every user and every HOME on the machine shares one namespace. It hashes the
  * directory's real path, so two spellings of the same home (a symlink) agree and two homes never do.
  */
 function runtimeDirScope(): string {
-  const realDir = join(realPathOrSelf(homedir()), '.mcpkit', 'runtimes');
-  return createHash('sha256').update(realDir).digest('hex').slice(0, 10);
+  return createHash('sha256').update(realRuntimeDir()).digest('hex').slice(0, 10);
 }
 
 export function getRuntimeSocketPath(serverName: string): string {
@@ -99,7 +108,12 @@ export function getRuntimeSocketPath(serverName: string): string {
   if (process.platform === 'win32') {
     return `\\\\.\\pipe\\mcpkit-${runtimeDirScope()}-${key}`;
   }
-  const socketPath = join(getRuntimeDir(), `${key}.sock`);
+  // The real path, not the spelling this process happens to use: the host binds the socket and the
+  // other processes probe it (see runtime-claim.ts) each through their own spelling of HOME, and a
+  // short alias of a deep home (or the reverse) would otherwise send them to different sockets of
+  // one runtime. The real path is what the length is judged on, and it is the path handed out when
+  // it fits, so a long alias never reaches bind().
+  const socketPath = join(realRuntimeDir(), `${key}.sock`);
   // The runtime directory can be too deep for a socket path. The fallback lives in the system tmp
   // dir, which every HOME shares, so it must say which runtime directory it belongs to as well as
   // which server, or two homes would bind (and delete) each other's socket.

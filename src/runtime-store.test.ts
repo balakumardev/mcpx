@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { existsSync } from 'node:fs';
 import { chmod, mkdir, mkdtemp, readdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import {
   deleteRuntimeArtifacts,
   ensureRuntimeDir,
@@ -80,23 +80,86 @@ describe('runtime store', () => {
       expect(getRuntimeSocketPath('other')).not.toBe(second);
     });
 
-    it('gives one home the same fallback however it is spelled (a symlink to it)', async () => {
+    // The socket decision must not depend on how a home is spelled, because the host binds the socket
+    // and every other process probes it (runtime-claim.ts) each under its own spelling of HOME. The
+    // fixtures below put the short spelling directly under /tmp: on macOS the system tmp dir alone is
+    // ~50 bytes, which would make every spelling too long and hide the difference.
+    const SHORT_BASE = '/tmp';
+    const SOCKET_BYTES_MAX = 103; // sun_path on macOS: 104 bytes with the NUL. Linux has 108.
+
+    async function shortRoot(): Promise<string> {
+      const root = await mkdtemp(join(SHORT_BASE, 'mk-'));
+      scratch.push(root);
+      return root;
+    }
+
+    async function longRoot(): Promise<string> {
       const root = await realpath(await mkdtemp(join(tmpdir(), 'mcpkit-link-')));
       scratch.push(root);
-      const realHome = join(root, 'z'.repeat(70), 'home');
-      await mkdir(realHome, { recursive: true });
-      const alias = join(root, 'alias');
-      await symlink(realHome, alias);
+      return root;
+    }
 
-      await useHome(realHome);
-      const viaRealPath = getRuntimeSocketPath('browsermcp');
+    const socketUnder = (home: string) => join(home, '.mcpkit', 'runtimes', 'browsermcp-xxxxxxxxxx.sock');
+
+    async function socketVia(spelling: string): Promise<string> {
+      await useHome(spelling);
+      const socketPath = getRuntimeSocketPath('browsermcp');
       scratch.pop();
-      await useHome(alias);
-      const viaAlias = getRuntimeSocketPath('browsermcp');
-      scratch.pop();
+      return socketPath;
+    }
+
+    it('gives one home the same fallback however it is spelled (a symlink to it that is short)', async () => {
+      const realHome = join(await longRoot(), 'z'.repeat(70), 'home');
+      await mkdir(realHome, { recursive: true });
+      const alias = join(await shortRoot(), 'alias');
+      await symlink(realHome, alias);
+      // The fixture only proves something while the two spellings disagree about the length.
+      expect(Buffer.byteLength(socketUnder(alias))).toBeLessThan(100);
+      expect(Buffer.byteLength(socketUnder(realHome))).toBeGreaterThan(SOCKET_BYTES_MAX);
+
+      const viaRealPath = await socketVia(realHome);
+      const viaAlias = await socketVia(alias);
 
       expect(dirname(viaRealPath)).toBe(tmpdir());
       expect(viaAlias).toBe(viaRealPath);
+    });
+
+    it('gives one home the same socket however it is spelled (a symlink to it that is long)', async () => {
+      const realHome = join(await shortRoot(), 'home');
+      await mkdir(realHome, { recursive: true });
+      const alias = join(await longRoot(), 'a'.repeat(70), 'alias');
+      await mkdir(dirname(alias), { recursive: true });
+      await symlink(realHome, alias);
+      expect(Buffer.byteLength(socketUnder(realHome))).toBeLessThan(100);
+      expect(Buffer.byteLength(socketUnder(alias))).toBeGreaterThan(SOCKET_BYTES_MAX);
+
+      const viaRealPath = await socketVia(realHome);
+      const viaAlias = await socketVia(alias);
+
+      // The long spelling must not be used to bind: it does not fit sun_path.
+      expect(viaAlias).toBe(viaRealPath);
+      expect(Buffer.byteLength(viaAlias)).toBeLessThanOrEqual(SOCKET_BYTES_MAX);
+      expect(viaAlias).toBe(join(await realpath(realHome), '.mcpkit', 'runtimes', basename(viaAlias)));
+    });
+
+    it('switches to the tmp dir exactly where the directory path stops leaving room, and never hands out more than sun_path holds', () => {
+      // Homes that do not exist, so the path is only computed.
+      const nowhere = (extra: number) => `/mcpkit-no-such-home-${'a'.repeat(extra)}`;
+      process.env.HOME = nowhere(0);
+      const baseLength = Buffer.byteLength(getRuntimeSocketPath('limit'));
+      const homeFor = (socketBytes: number) => nowhere(socketBytes - baseLength);
+
+      process.env.HOME = homeFor(99);
+      expect(Buffer.byteLength(getRuntimeSocketPath('limit'))).toBe(99);
+      expect(dirname(getRuntimeSocketPath('limit'))).not.toBe(tmpdir());
+
+      process.env.HOME = homeFor(100);
+      expect(dirname(getRuntimeSocketPath('limit'))).toBe(tmpdir());
+
+      for (let bytes = baseLength; bytes < 300; bytes += 1) {
+        process.env.HOME = homeFor(bytes);
+        expect(Buffer.byteLength(getRuntimeSocketPath('limit'))).toBeLessThanOrEqual(SOCKET_BYTES_MAX);
+      }
     });
 
     it('also tells homes apart in the Windows pipe name, which is shared by every user of the machine', async () => {

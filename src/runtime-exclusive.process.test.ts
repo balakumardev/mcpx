@@ -108,7 +108,7 @@ describe('exactly one runtime host per server, through separate CLI processes', 
     if (originalStartLog === undefined) delete process.env.FAKE_START_LOG;
     else process.env.FAKE_START_LOG = originalStartLog;
     await rm(homeDir, { recursive: true, force: true });
-  });
+  }, 60_000);
 
   it('a second host for a running server exits at once, starts no server and leaves the first host as it was', async () => {
     const first = JSON.parse(await cli('call', SERVER, 'echo', '{"n":1}'));
@@ -156,6 +156,11 @@ describe('exactly one runtime host per server, through separate CLI processes', 
     }
   }, 120_000);
 
+  // Each of these starts a runtime from cold: a CLI process and a detached host, both `node --import tsx`,
+  // then stops it again in afterEach. That is ~1 s on an idle 2-core machine and 7-8 s once the cores
+  // are shared with the other test files (measured on Linux: 5x oversubscribed), so the default 5 s
+  // is a test of the machine's load, not of the runtime. The tests above carry explicit timeouts for
+  // the same reason.
   describe('what a runtime leaves on disk', () => {
     it('keeps the directory, the log and the record private to the owner', async () => {
       await cli('call', SERVER, 'echo', '{}');
@@ -163,7 +168,7 @@ describe('exactly one runtime host per server, through separate CLI processes', 
       expect(await modeOf(getRuntimeDir())).toBe(0o700);
       expect(await modeOf(getRuntimeLogPath(SERVER))).toBe(0o600);
       expect(await modeOf(getRuntimeMetadataPath(SERVER))).toBe(0o600);
-    });
+    }, 60_000);
 
     it('tightens a directory and a log that an older release left open, when the daemon starts', async () => {
       await mkdir(getRuntimeDir(), { recursive: true });
@@ -176,6 +181,6 @@ describe('exactly one runtime host per server, through separate CLI processes', 
       expect(await modeOf(getRuntimeDir())).toBe(0o700);
       expect(await modeOf(getRuntimeLogPath(SERVER))).toBe(0o600);
       expect(await readFile(getRuntimeLogPath(SERVER), 'utf-8')).toMatch(/^an older run\n/);
-    });
+    }, 60_000);
   });
 });
