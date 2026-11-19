@@ -1,7 +1,7 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { GeneratorContext, GeneratedSkill } from '../types.js';
-import { buildSkillContent } from './index.js';
+import { buildSkillContent, skillFilePath } from './index.js';
 
 // Hermes resolves its home from $HERMES_HOME, falling back to ~/.hermes.
 // Skills live under <home>/skills and are discovered by recursively walking
@@ -12,10 +12,10 @@ function hermesHome(): string {
 }
 
 export function generate(ctx: GeneratorContext): GeneratedSkill {
-  const skillDir = `mcpkit-${ctx.serverName}`;
-  const filePath = ctx.scope === 'global'
-    ? join(hermesHome(), 'skills', skillDir, 'SKILL.md')
-    : join(process.cwd(), '.hermes', 'skills', skillDir, 'SKILL.md');
+  const skillsRoot = ctx.scope === 'global'
+    ? join(hermesHome(), 'skills')
+    : join(process.cwd(), '.hermes', 'skills');
+  const filePath = skillFilePath(skillsRoot, ctx.serverName);
 
   return {
     agent: 'hermes',

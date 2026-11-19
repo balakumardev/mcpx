@@ -1,8 +1,11 @@
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { realpathSync } from 'node:fs';
+import { chmod, mkdir, open, readFile, readdir, rm, type FileHandle } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { writeFileAtomic } from './atomic-file.js';
 import { resolveRuntimeConfig } from './runtime-config.js';
+import { RUNTIME_PROTOCOL_VERSION } from './runtime-protocol.js';
 import type { ServerEntry } from './types.js';
 
 export interface RuntimeRecord {
@@ -16,6 +19,19 @@ export interface RuntimeRecord {
   idleTimeoutSec: number;
   callTimeoutSec: number;
 }
+
+/** Who is starting or running the host of a runtime. See runtime-claim.ts. */
+export interface RuntimeClaim {
+  pid: number;
+  startedAt: string;
+}
+
+// The log can hold request data, the directory holds the socket that runs tools with the user's
+// credentials: both are private to the owner.
+const PRIVATE_DIR_MODE = 0o700;
+const PRIVATE_FILE_MODE = 0o600;
+// A Unix socket path has to fit sun_path: 104 bytes on macOS, 108 on Linux, each with its NUL.
+const SOCKET_PATH_LIMIT = 100;
 
 function stableSerialize(value: unknown): string {
   if (Array.isArray(value)) {
@@ -56,28 +72,75 @@ export function getRuntimeLockPath(serverName: string): string {
   return join(getRuntimeDir(), `${runtimeKey(serverName)}.lock`);
 }
 
+export function getRuntimeClaimPath(serverName: string): string {
+  return join(getRuntimeDir(), `${runtimeKey(serverName)}.pid`);
+}
+
+function realPathOrSelf(path: string): string {
+  try {
+    return realpathSync.native(path);
+  } catch {
+    return path;
+  }
+}
+
+/**
+ * Identifies this runtime directory in the names that live outside it (the fallback socket below,
+ * a Windows pipe), where every user and every HOME on the machine shares one namespace. It hashes the
+ * directory's real path, so two spellings of the same home (a symlink) agree and two homes never do.
+ */
+function runtimeDirScope(): string {
+  const realDir = join(realPathOrSelf(homedir()), '.mcpkit', 'runtimes');
+  return createHash('sha256').update(realDir).digest('hex').slice(0, 10);
+}
+
 export function getRuntimeSocketPath(serverName: string): string {
   const key = runtimeKey(serverName);
   if (process.platform === 'win32') {
-    return `\\\\.\\pipe\\mcpkit-${key}`;
+    return `\\\\.\\pipe\\mcpkit-${runtimeDirScope()}-${key}`;
   }
   const socketPath = join(getRuntimeDir(), `${key}.sock`);
-  // macOS and many Unix platforms impose a fairly small limit on Unix socket paths.
-  // Fall back to the system tmp dir when the runtime metadata directory would exceed it.
-  if (socketPath.length >= 100) {
-    return join(tmpdir(), `mcpkit-${key.slice(-10)}.sock`);
+  // The runtime directory can be too deep for a socket path. The fallback lives in the system tmp
+  // dir, which every HOME shares, so it must say which runtime directory it belongs to as well as
+  // which server, or two homes would bind (and delete) each other's socket.
+  if (Buffer.byteLength(socketPath) >= SOCKET_PATH_LIMIT) {
+    return join(tmpdir(), `mcpkit-${runtimeDirScope()}-${key.slice(-10)}.sock`);
   }
   return socketPath;
 }
 
 export async function ensureRuntimeDir(): Promise<void> {
-  await mkdir(getRuntimeDir(), { recursive: true });
+  const dir = getRuntimeDir();
+  await mkdir(dir, { recursive: true, mode: PRIVATE_DIR_MODE });
+  // mkdir leaves an existing directory as it is, and an older release created it open to everyone.
+  await chmod(dir, PRIVATE_DIR_MODE).catch(() => undefined);
+}
+
+/**
+ * Open the runtime's log for appending. It is created readable by its owner only, and one that an
+ * older release created with wider permissions is tightened.
+ */
+export async function openRuntimeLog(serverName: string): Promise<FileHandle> {
+  await ensureRuntimeDir();
+  const handle = await open(getRuntimeLogPath(serverName), 'a', PRIVATE_FILE_MODE);
+  await handle.chmod(PRIVATE_FILE_MODE).catch(() => undefined);
+  return handle;
+}
+
+function parseRuntimeRecord(content: string): RuntimeRecord | undefined {
+  try {
+    const parsed = JSON.parse(content) as Partial<RuntimeRecord> | null;
+    return parsed && typeof parsed.pid === 'number' && typeof parsed.serverName === 'string'
+      ? (parsed as RuntimeRecord)
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export async function readRuntimeRecord(serverName: string): Promise<RuntimeRecord | undefined> {
   try {
-    const content = await readFile(getRuntimeMetadataPath(serverName), 'utf-8');
-    return JSON.parse(content) as RuntimeRecord;
+    return parseRuntimeRecord(await readFile(getRuntimeMetadataPath(serverName), 'utf-8'));
   } catch {
     return undefined;
   }
@@ -91,8 +154,7 @@ export async function listRuntimeRecords(): Promise<RuntimeRecord[]> {
         .filter((file) => file.endsWith('.json'))
         .map(async (file) => {
           try {
-            const content = await readFile(join(getRuntimeDir(), file), 'utf-8');
-            return JSON.parse(content) as RuntimeRecord;
+            return parseRuntimeRecord(await readFile(join(getRuntimeDir(), file), 'utf-8'));
           } catch {
             return undefined;
           }
@@ -104,29 +166,65 @@ export async function listRuntimeRecords(): Promise<RuntimeRecord[]> {
   }
 }
 
+/** Replace the record in one step: a reader sees the old one or the new one, never half of it. */
 export async function writeRuntimeRecord(record: RuntimeRecord): Promise<void> {
   await ensureRuntimeDir();
-  await writeFile(getRuntimeMetadataPath(record.serverName), JSON.stringify(record, null, 2), 'utf-8');
+  await writeFileAtomic(getRuntimeMetadataPath(record.serverName), JSON.stringify(record, null, 2), {
+    mode: PRIVATE_FILE_MODE,
+  });
 }
 
+export async function readRuntimeClaim(serverName: string): Promise<RuntimeClaim | undefined> {
+  try {
+    const parsed = JSON.parse(await readFile(getRuntimeClaimPath(serverName), 'utf-8')) as Partial<RuntimeClaim> | null;
+    return parsed && typeof parsed.pid === 'number' && typeof parsed.startedAt === 'string'
+      ? { pid: parsed.pid, startedAt: parsed.startedAt }
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Remove what the daemons in `pids` left behind: the record and the claim only while they still
+ * name one of them, and the socket only when no other daemon is recorded. Nothing here touches the
+ * start lock, and nothing of a daemon that is not listed, however it came to be there: a host that
+ * stops, or a caller that finds a dead one, must never take files from a live runtime that started
+ * in the meantime. The log is removed on request (`removeLog`), whoever wrote it. A host that is
+ * closing passes `keepSocket`: closing its server already removed the socket it bound, and one that
+ * never got to bind (it found the runtime owned) has none of its own to remove.
+ */
 export async function deleteRuntimeArtifacts(
   serverName: string,
-  options: { removeLog?: boolean } = {},
+  options: { pids: readonly number[]; removeLog?: boolean; keepSocket?: boolean },
 ): Promise<void> {
-  const paths = [
-    getRuntimeMetadataPath(serverName),
-    getRuntimeLockPath(serverName),
-    ...(process.platform === 'win32' ? [] : [getRuntimeSocketPath(serverName)]),
-    ...(options.removeLog ? [getRuntimeLogPath(serverName)] : []),
-  ];
+  const [record, claim] = await Promise.all([readRuntimeRecord(serverName), readRuntimeClaim(serverName)]);
+  const socketPaths = new Set<string>();
+  let otherOwner = false;
 
-  await Promise.all(paths.map(async (path) => {
-    try {
-      await rm(path, { force: true });
-    } catch {
-      // Ignore missing artifacts.
+  if (record) {
+    if (options.pids.includes(record.pid)) {
+      await rm(getRuntimeMetadataPath(serverName), { force: true });
+      // The socket this daemon announced, which an older release may have put somewhere else.
+      socketPaths.add(record.socketPath);
+    } else {
+      otherOwner = true;
     }
-  }));
+  }
+  if (claim) {
+    if (options.pids.includes(claim.pid)) {
+      await rm(getRuntimeClaimPath(serverName), { force: true });
+    } else {
+      otherOwner = true;
+    }
+  }
+  if (!otherOwner) socketPaths.add(getRuntimeSocketPath(serverName));
+  if (process.platform !== 'win32' && !options.keepSocket) {
+    await Promise.all([...socketPaths].map((path) => rm(path, { force: true })));
+  }
+  if (options.removeLog) {
+    await rm(getRuntimeLogPath(serverName), { force: true });
+  }
 }
 
 export function isProcessRunning(pid: number): boolean {
@@ -142,6 +240,7 @@ export function computeRuntimeFingerprint(
   entry: Pick<ServerEntry, 'transport' | 'paramProvider' | 'runtime'>,
 ): string {
   const payload = {
+    protocol: RUNTIME_PROTOCOL_VERSION,
     transport: entry.transport,
     paramProvider: entry.paramProvider ?? null,
     runtime: resolveRuntimeConfig(entry.runtime),

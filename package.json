@@ -21,6 +21,7 @@
   "scripts": {
     "build": "tsup",
     "dev": "tsx src/cli.ts",
+    "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "prepublishOnly": "npm run build"
   },
@@ -40,9 +41,12 @@
     "node": ">=20"
   },
   "dependencies": {
+    "@jitl/quickjs-wasmfile-release-sync": "0.32.0",
     "@modelcontextprotocol/sdk": "^1.12.1",
     "chalk": "^5.4.1",
     "commander": "^13.1.0",
+    "quickjs-emscripten-core": "0.32.0",
+    "sucrase": "3.35.1",
     "yaml": "^2.7.1"
   },
   "devDependencies": {
@@ -50,6 +54,7 @@
     "tsup": "^8.4.0",
     "tsx": "^4.19.3",
     "typescript": "^5.7.3",
-    "vitest": "^3.0.5"
+    "vitest": "^3.0.5",
+    "zod": "^4.6.7"
   }
 }

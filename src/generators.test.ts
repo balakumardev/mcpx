@@ -189,6 +189,63 @@ describe('generators', () => {
     expect(content).not.toContain(`mcpkit call github navigate '{}'`);
   });
 
+  it('builds the full-format examples with the shared builder, so schema keywords are honoured', async () => {
+    const { buildSkillContent } = await import('./generators/index.js');
+
+    const content = buildSkillContent({
+      ...ctx,
+      tools: [
+        {
+          name: 'configure',
+          description: 'Configure things',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              count: { type: 'integer', minimum: 5, maximum: 9 },
+              ratio: { type: 'number', exclusiveMinimum: 0, maximum: 1 },
+              name: { type: 'string', minLength: 8 },
+              state: { type: 'string', enum: ['open', 'closed'] },
+              kind: { const: 'issue' },
+              tags: { type: 'array', items: { type: 'string' }, minItems: 2 },
+              pair: { type: 'array', prefixItems: [{ type: 'string' }, { type: 'integer' }], minItems: 2 },
+              either: { anyOf: [{ type: 'integer', minimum: 3 }, { type: 'string' }] },
+              // The shared builder writes false; the old full-format builder wrote true. Full, compact and describe now agree.
+              flag: { type: 'boolean' },
+              nested: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
+            },
+            required: ['count', 'ratio', 'name', 'state', 'kind', 'tags', 'pair', 'either', 'flag', 'nested', 'undeclared'],
+          },
+        },
+      ],
+    }, { format: 'full' });
+
+    const params = '{"count": 5, "ratio": 0.5, "name": "<name__>", "state": "open", "kind": "issue", "tags": ["<tags>","<tags>"], '
+      + '"pair": ["<pair>",0], "either": 3, "flag": false, "nested": {"id":"<id>"}, "undeclared": "<undeclared>"}';
+    // Once as the example of the skill and once under the tool.
+    expect(content.split(`mcpkit call github configure '${params}'`)).toHaveLength(3);
+  });
+
+  it('keeps the plain full-format example byte for byte for string, integer, array, object and untyped parameters', async () => {
+    const { buildSkillContent } = await import('./generators/index.js');
+
+    const content = buildSkillContent({
+      ...ctx,
+      tools: [
+        {
+          name: 'simple',
+          description: 'Simple',
+          inputSchema: {
+            type: 'object',
+            properties: { url: { type: 'string' }, retries: { type: 'integer' }, tags: { type: 'array' }, opts: { type: 'object' }, any: {} },
+            required: ['url', 'retries', 'tags', 'opts', 'any'],
+          },
+        },
+      ],
+    }, { format: 'full' });
+
+    expect(content).toContain(`mcpkit call github simple '{"url": "<url>", "retries": 0, "tags": [], "opts": {}, "any": "<any>"}'`);
+  });
+
   it('samples across the whole tool list for multi-domain servers (not just alphabetical head)', async () => {
     const { buildSkillContent } = await import('./generators/index.js');
 

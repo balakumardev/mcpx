@@ -10,6 +10,10 @@ import { createEditCommand } from './commands/edit.js';
 import { createAuthCommand } from './commands/auth.js';
 import { createAgentsCommand } from './commands/agents.js';
 import { createRuntimeCommand } from './commands/runtime.js';
+import { createSearchCommand } from './commands/search.js';
+import { createDescribeCommand } from './commands/describe.js';
+import { createTypesCommand } from './commands/gen-types.js';
+import { createExecCommand, createSandboxWorkerCommand } from './commands/exec.js';
 
 const program = new Command()
   .name('mcpkit')
@@ -27,5 +31,10 @@ program.addCommand(createEditCommand());
 program.addCommand(createAuthCommand());
 program.addCommand(createAgentsCommand());
 program.addCommand(createRuntimeCommand());
+program.addCommand(createSearchCommand());
+program.addCommand(createDescribeCommand());
+program.addCommand(createTypesCommand());
+program.addCommand(createExecCommand());
+program.addCommand(createSandboxWorkerCommand(), { hidden: true });
 
 program.parse();

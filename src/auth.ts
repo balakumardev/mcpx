@@ -1,5 +1,4 @@
 import { createServer, type Server } from 'node:http';
-import { readFile, writeFile, mkdir, chmod } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { exec } from 'node:child_process';
@@ -7,6 +6,7 @@ import { platform } from 'node:os';
 import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js';
 import { auth } from '@modelcontextprotocol/sdk/client/auth.js';
 import type { OAuthClientMetadata, OAuthClientInformationMixed, OAuthTokens } from '@modelcontextprotocol/sdk/shared/auth.js';
+import { readStateFile, stateFileError, withFileLock, writeFileAtomic } from './atomic-file.js';
 import type { OAuthConfig } from './types.js';
 import { redirectSafeFetch } from './client.js';
 
@@ -26,26 +26,53 @@ function getCredentialsPath(): string {
   return join(homedir(), '.mcpkit', 'credentials.json');
 }
 
+/**
+ * The stored credentials. A missing or blank file is an empty store; a file that cannot be read
+ * or parsed throws an error naming it, because every credentials write reads the store first and
+ * would otherwise save an empty one over all the tokens in the damaged file.
+ */
 async function loadCredentials(): Promise<CredentialStore> {
+  const credentialsPath = getCredentialsPath();
+  const content = await readStateFile(credentialsPath);
+  if (content === undefined) return {};
+
+  let data: unknown;
   try {
-    const content = await readFile(getCredentialsPath(), 'utf-8');
-    return JSON.parse(content) as CredentialStore;
-  } catch {
-    return {};
+    data = JSON.parse(content);
+  } catch (err) {
+    throw stateFileError(credentialsPath, `invalid JSON (${err instanceof Error ? err.message : String(err)})`);
   }
+  if (typeof data !== 'object' || data === null || Array.isArray(data)) {
+    throw stateFileError(credentialsPath, 'not a JSON object');
+  }
+  return data as CredentialStore;
 }
 
-async function saveCredentials(store: CredentialStore): Promise<void> {
+/**
+ * Persist the credentials of ONE server: lock, re-read the file, replace only
+ * that server's key (or drop it when `credentials` is undefined), write
+ * atomically with mode 0600. A process holding a stale snapshot of the whole
+ * store can therefore never overwrite another server's tokens written by a
+ * parallel process.
+ */
+async function updateServerCredentials(
+  serverUrl: string,
+  credentials: ServerCredentials | undefined,
+): Promise<void> {
   const filePath = getCredentialsPath();
-  await mkdir(join(homedir(), '.mcpkit'), { recursive: true });
-  await writeFile(filePath, JSON.stringify(store, null, 2), 'utf-8');
-  await chmod(filePath, 0o600);
+  await withFileLock(`${filePath}.lock`, async () => {
+    const store = await loadCredentials();
+    if (credentials) {
+      store[serverUrl] = credentials;
+    } else {
+      delete store[serverUrl];
+    }
+    await writeFileAtomic(filePath, JSON.stringify(store, null, 2), { mode: 0o600 });
+  });
 }
 
 export async function clearCredentials(serverUrl: string): Promise<void> {
-  const store = await loadCredentials();
-  delete store[serverUrl];
-  await saveCredentials(store);
+  await updateServerCredentials(serverUrl, undefined);
 }
 
 export async function hasValidTokens(serverUrl: string): Promise<boolean> {
@@ -170,20 +197,41 @@ async function isPortAvailable(port: number): Promise<boolean> {
 
 // --- OAuth Provider ---
 
+export interface McpkitOAuthProviderOptions {
+  /**
+   * When set, the provider only uses and refreshes tokens that are already
+   * stored: it never registers a client, starts an authorization or opens a
+   * browser. Those steps throw this message instead.
+   */
+  blockedMessage?: string;
+}
+
 export class McpkitOAuthProvider implements OAuthClientProvider {
   private serverUrl: string;
   private port: number;
   private store: CredentialStore;
   private credentials: ServerCredentials;
   private oauthConfig?: OAuthConfig;
+  private blockedMessage?: string;
   private _codePromise?: Promise<CallbackResult>;
 
-  constructor(serverUrl: string, port: number, store: CredentialStore, oauthConfig?: OAuthConfig) {
+  constructor(
+    serverUrl: string,
+    port: number,
+    store: CredentialStore,
+    oauthConfig?: OAuthConfig,
+    options: McpkitOAuthProviderOptions = {},
+  ) {
     this.serverUrl = serverUrl;
     this.port = port;
     this.store = store;
     this.oauthConfig = oauthConfig;
+    this.blockedMessage = options.blockedMessage;
     this.credentials = store[serverUrl] || {};
+  }
+
+  private assertInteractive(): void {
+    if (this.blockedMessage) throw new Error(this.blockedMessage);
   }
 
   get redirectUrl(): URL {
@@ -192,7 +240,7 @@ export class McpkitOAuthProvider implements OAuthClientProvider {
 
   get clientMetadata(): OAuthClientMetadata {
     return {
-      redirect_uris: [this.redirectUrl],
+      redirect_uris: [this.redirectUrl.toString()],
       token_endpoint_auth_method: this.oauthConfig?.clientSecret ? 'client_secret_post' : 'none',
       grant_types: ['authorization_code', 'refresh_token'],
       response_types: ['code'],
@@ -215,10 +263,11 @@ export class McpkitOAuthProvider implements OAuthClientProvider {
   }
 
   async saveClientInformation(info: OAuthClientInformationMixed): Promise<void> {
+    this.assertInteractive();
     this.credentials.clientInfo = info;
     this.credentials.callbackPort = this.port;
     this.store[this.serverUrl] = this.credentials;
-    await saveCredentials(this.store);
+    await updateServerCredentials(this.serverUrl, this.credentials);
   }
 
   tokens(): OAuthTokens | undefined {
@@ -229,7 +278,7 @@ export class McpkitOAuthProvider implements OAuthClientProvider {
     this.credentials.tokens = tokens;
     this.credentials.tokenIssuedAt = Date.now();
     this.store[this.serverUrl] = this.credentials;
-    await saveCredentials(this.store);
+    await updateServerCredentials(this.serverUrl, this.credentials);
   }
 
   hasValidTokens(): boolean {
@@ -242,12 +291,14 @@ export class McpkitOAuthProvider implements OAuthClientProvider {
   }
 
   async saveCodeVerifier(verifier: string): Promise<void> {
+    this.assertInteractive();
     this.credentials.codeVerifier = verifier;
     this.store[this.serverUrl] = this.credentials;
-    await saveCredentials(this.store);
+    await updateServerCredentials(this.serverUrl, this.credentials);
   }
 
   async redirectToAuthorization(authorizationUrl: URL): Promise<void> {
+    this.assertInteractive();
     const { server: _server, codePromise } = startCallbackServer(this.port);
     this._codePromise = codePromise;
     openBrowser(authorizationUrl.toString());
@@ -279,7 +330,7 @@ export class McpkitOAuthProvider implements OAuthClientProvider {
         break;
     }
     this.store[this.serverUrl] = this.credentials;
-    await saveCredentials(this.store);
+    await updateServerCredentials(this.serverUrl, this.credentials);
   }
 }
 
@@ -299,12 +350,31 @@ export async function createOAuthProvider(serverUrl: string, oauthConfig?: OAuth
       if (existingPort) {
         delete store[serverUrl]?.clientInfo;
         delete store[serverUrl]?.callbackPort;
-        await saveCredentials(store);
+        await updateServerCredentials(serverUrl, store[serverUrl]);
       }
       port = await findAvailablePort();
     }
   }
   return new McpkitOAuthProvider(serverUrl, port, store, oauthConfig);
+}
+
+/**
+ * A provider for callers that must never start an authorization (discovery
+ * inside `call`, `exec`): it reuses the stored callback port without probing it
+ * and writes nothing when it is built, so a busy port cannot cost the user a
+ * stored client registration. Only already-stored tokens work; anything that
+ * would need a browser throws `blockedMessage`.
+ */
+export async function createStoredOAuthProvider(
+  serverUrl: string,
+  oauthConfig: OAuthConfig | undefined,
+  blockedMessage: string,
+): Promise<McpkitOAuthProvider> {
+  const store = await loadCredentials();
+  // The redirect URL is only used to register a client or start an authorization, both
+  // blocked here, so a missing stored port needs no real one.
+  const port = oauthConfig?.callbackPort ?? store[serverUrl]?.callbackPort ?? 0;
+  return new McpkitOAuthProvider(serverUrl, port, store, oauthConfig, { blockedMessage });
 }
 
 export async function authenticateIfNeeded(serverUrl: string, oauthConfig?: OAuthConfig): Promise<McpkitOAuthProvider> {

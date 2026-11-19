@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { readFile, rm, mkdir } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { McpkitOAuthProvider } from './auth.js';
@@ -7,6 +7,23 @@ import { McpkitOAuthProvider } from './auth.js';
 // Test credential storage via the provider class (uses in-memory store)
 describe('McpkitOAuthProvider', () => {
   const serverUrl = 'https://mcp.example.com';
+  const originalHome = process.env.HOME;
+  let homeDir = '';
+
+  // Several tests save credentials: keep those writes out of the real ~/.mcpkit.
+  beforeEach(async () => {
+    homeDir = await mkdtemp(join(tmpdir(), 'mcpkit-auth-'));
+    process.env.HOME = homeDir;
+  });
+
+  afterEach(async () => {
+    if (originalHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = originalHome;
+    }
+    await rm(homeDir, { recursive: true, force: true });
+  });
 
   it('returns undefined for clientInformation when no credentials stored', () => {
     const provider = new McpkitOAuthProvider(serverUrl, 9999, {});

@@ -1,9 +1,9 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { listServers, getServer } from '../config.js';
-import { discoverTools } from '../client.js';
+import { discoverForEntry } from '../discover.js';
+import { trySaveSchemaCache } from '../schema-store.js';
 import { loadAgentSettings, resolveServerAgents } from '../agent-config.js';
-import { authenticateIfNeeded } from '../auth.js';
 
 export function createListCommand(): Command {
   return new Command('list')
@@ -23,13 +23,10 @@ Examples:
             process.exit(1);
           }
 
-          // If OAuth, authenticate first
-          const authProvider = (entry.transport.type === 'http' || entry.transport.type === 'sse') && entry.transport.auth === 'oauth'
-            ? await authenticateIfNeeded(entry.transport.url, entry.transport.oauth)
-            : undefined;
-
           console.log(chalk.blue(`Connecting to ${server}...`));
-          const { tools, serverMeta } = await discoverTools(entry.transport, authProvider, entry.envHints);
+          const { tools, serverMeta } = await discoverForEntry(entry, { interactiveAuth: true });
+          // The live listing is fresh data: keep the offline schema cache in step with it.
+          await trySaveSchemaCache(entry.name, tools);
           console.log(chalk.bold(`\nTools on ${serverMeta.name || server} (${tools.length}):\n`));
 
           for (const tool of tools) {

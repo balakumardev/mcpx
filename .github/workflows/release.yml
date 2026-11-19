@@ -23,6 +23,10 @@ jobs:
 
       - run: npm ci
 
+      - run: npm run typecheck
+
+      - run: npm test
+
       - name: Bump patch version
         id: version
         run: |

@@ -1,13 +1,13 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { existsSync } from 'node:fs';
-import { getServer, listServers, addServer } from '../config.js';
-import { discoverTools } from '../client.js';
+import { getServer, listServers, updateServer } from '../config.js';
+import { discoverForEntry } from '../discover.js';
+import { trySaveSchemaCache } from '../schema-store.js';
 import { loadAgentSettings, resolveServerAgents } from '../agent-config.js';
 import { getGenerator } from '../generators/index.js';
 import { reconcileSkillFiles } from '../skill-sync.js';
 import { writeMetaSkill } from '../meta-skill.js';
-import { authenticateIfNeeded } from '../auth.js';
 import type { AgentType, ServerEntry } from '../types.js';
 
 async function hasSkillFiles(entry: ServerEntry, agents: AgentType[]): Promise<boolean> {
@@ -71,13 +71,8 @@ Examples:
 
             console.log(chalk.blue(`Syncing ${entry.name}...`));
 
-            // If OAuth, authenticate first
-            const authProvider = (entry.transport.type === 'http' || entry.transport.type === 'sse') && entry.transport.auth === 'oauth'
-              ? await authenticateIfNeeded(entry.transport.url, entry.transport.oauth)
-              : undefined;
-
-            // Connect and discover tools
-            const { tools, serverMeta } = await discoverTools(entry.transport, authProvider, entry.envHints);
+            // Connect and discover tools (authenticating first when the server uses OAuth)
+            const { tools, serverMeta } = await discoverForEntry(entry, { interactiveAuth: true });
             console.log(`  Found ${tools.length} tool(s)`);
             const ctx = { serverName: entry.name, tools, transport: entry.transport, description: entry.description, serverMeta, scope: 'global' as const, runtime: entry.runtime, paramProvider: entry.paramProvider };
             await reconcileSkillFiles({
@@ -94,7 +89,14 @@ Examples:
               entry.agents = resolved.agents;
               entry.agentSelectionMode = resolved.selectionMode;
               entry.updatedAt = new Date().toISOString();
-              await addServer(entry);
+              // Patch the stored entry: it may have been edited or removed while tools were discovered.
+              const stored = await updateServer(entry.name, (current) => {
+                current.toolCount = entry.toolCount;
+                current.agents = entry.agents;
+                current.agentSelectionMode = entry.agentSelectionMode;
+                current.updatedAt = entry.updatedAt;
+              });
+              if (stored) await trySaveSchemaCache(entry.name, tools);
             }
 
             synced++;

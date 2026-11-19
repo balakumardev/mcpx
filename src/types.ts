@@ -94,10 +94,26 @@ export interface ServerRegistry {
 }
 
 // Tool types
+
+/**
+ * Behaviour hints a server may attach to a tool. Everything here is declared by
+ * the server and therefore UNTRUSTED: treat it as a hint, never as a guarantee.
+ */
+export interface ToolAnnotations {
+  title?: string;
+  readOnlyHint?: boolean;
+  destructiveHint?: boolean;
+  idempotentHint?: boolean;
+  openWorldHint?: boolean;
+}
+
 export interface ToolInfo {
   name: string;
+  title?: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  outputSchema?: Record<string, unknown>;
+  annotations?: ToolAnnotations;
 }
 
 // Agent types

@@ -1,20 +1,32 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { getServer } from '../config.js';
-import { createRuntimeHostForServer } from '../runtime-host.js';
+import { RuntimeAlreadyRunningError } from '../runtime-claim.js';
+import { createRuntimeHostForServer, type RuntimeHost } from '../runtime-host.js';
 import {
   getRuntimeStatus,
   listPersistentRuntimeStatuses,
-  stopRuntime,
+  stopRuntimeDaemons,
 } from '../runtime-manager.js';
 import { resolveRuntimeConfig, type ResolvedRuntimeConfig } from '../runtime-config.js';
+import { isValidServerName, quoteName, serverNameError } from '../server-name.js';
+
+/** A name as it may be printed: a name that cannot be a server name came from a record, so it is shown escaped. */
+function printable(name: string): string {
+  return isValidServerName(name) ? name : quoteName(name);
+}
+
+/** The same, in quotes for use in a sentence. */
+function quoted(name: string): string {
+  return isValidServerName(name) ? `"${name}"` : quoteName(name);
+}
 
 function printRuntimeStatus(
   name: string,
   status: Awaited<ReturnType<typeof getRuntimeStatus>>,
   runtime?: ResolvedRuntimeConfig,
 ): void {
-  console.log(chalk.bold(`\n${name}\n`));
+  console.log(chalk.bold(`\n${printable(name)}\n`));
   if (!status) {
     console.log(`  Running: ${chalk.yellow('no')}`);
     if (runtime) {
@@ -37,8 +49,16 @@ function printRuntimeStatus(
   console.log(`  Last:    ${status.lastUsedAt}`);
   console.log(`  Socket:  ${status.socketPath}`);
   console.log(`  Log:     ${status.logPath}`);
-  if (status.configStatus) {
+  if (status.orphaned) {
+    console.log(`  Config:  ${chalk.yellow('orphaned')} (no registered server has this name)`);
+  } else if (status.configStatus) {
     console.log(`  Config:  ${status.configStatus}`);
+  }
+  if (status.otherPids?.length) {
+    console.log(chalk.yellow(
+      `  Warning: ${status.otherPids.length} more daemon process(es) are recorded for this server (pid ${status.otherPids.join(', ')}). `
+      + `Run \`mcpkit runtime stop ${isValidServerName(name) ? name : JSON.stringify(name)}\` to stop them all.`,
+    ));
   }
   console.log();
 }
@@ -49,13 +69,30 @@ export function createRuntimeCommand(): Command {
   const hostCommand = new Command('_host')
     .argument('<name>', 'Server name to host')
     .action(async (name: string) => {
-      const host = await createRuntimeHostForServer(name);
+      let host: RuntimeHost | undefined;
+      let stopRequested = false;
+      // Registered before the MCP server is started, which can take seconds: a stop that arrives
+      // meanwhile has to wind the host down properly, not kill it with the server half started.
       const shutdown = () => {
-        void host.close();
+        stopRequested = true;
+        void host?.close();
       };
       process.on('SIGINT', shutdown);
       process.on('SIGTERM', shutdown);
+
+      try {
+        host = await createRuntimeHostForServer(name);
+      } catch (error) {
+        if (!(error instanceof RuntimeAlreadyRunningError)) throw error;
+        // Another host owns this server. It has been left alone; this one has nothing to do.
+        console.log(`${new Date().toISOString()} ${error.message} This host is not needed and exits.`);
+        process.exit(0);
+      }
+      if (stopRequested) void host.close();
       await host.waitUntilClosed();
+      // Nothing is left to serve. Exit explicitly: when the MCP server died during a call, the SDK
+      // keeps that call's timeout timer alive, which would hold this process for up to the call timeout.
+      process.exit(0);
     });
 
   runtime
@@ -70,16 +107,21 @@ Examples:
         .action(async (name?: string) => {
           try {
             if (name) {
-              const entry = await getServer(name);
+              // A name that cannot be a server name can still be the one in an orphaned runtime's record.
+              const entry = isValidServerName(name) ? await getServer(name) : undefined;
               const status = await getRuntimeStatus(name, entry);
               if (!entry && !status) {
-                console.error(chalk.red(`Server "${name}" not found and no runtime metadata exists.`));
+                console.error(chalk.red(
+                  isValidServerName(name)
+                    ? `Server "${name}" not found and no runtime metadata exists.`
+                    : `${serverNameError(name)?.message} No runtime metadata exists under that name either.`,
+                ));
                 process.exit(1);
               }
               const runtime = entry?.transport.type === 'stdio'
                 ? resolveRuntimeConfig(entry.runtime)
                 : undefined;
-              printRuntimeStatus(name, status, runtime);
+              printRuntimeStatus(name, status && !entry ? { ...status, orphaned: true } : status, runtime);
               return;
             }
 
@@ -107,12 +149,28 @@ Examples:
   $ mcpkit runtime stop browsermcp`)
         .action(async (name: string) => {
           try {
-            const stopped = await stopRuntime(name);
-            if (!stopped) {
+            const { found, daemons, killed } = await stopRuntimeDaemons(name);
+            if (!found) {
+              if (!isValidServerName(name)) {
+                console.error(chalk.red(`${serverNameError(name)?.message} No runtime is recorded under that name either.`));
+                process.exit(1);
+              }
               console.log(chalk.yellow(`No persistent runtime is active for "${name}".`));
               return;
             }
-            console.log(chalk.green(`✓ Stopped runtime for "${name}"`));
+            // A name that is not a valid one reaches this point only through a record that carries it:
+            // the orphaned daemon is stopped by the pid in that record.
+            console.log(chalk.green(`✓ Stopped runtime for ${quoted(name)}`));
+            if (daemons.length > 1) {
+              console.log(chalk.yellow(
+                `Warning: ${daemons.length} daemon processes were running for ${quoted(name)} (pid ${daemons.join(', ')}); all of them were stopped.`,
+              ));
+            }
+            if (killed.length > 0) {
+              console.log(chalk.yellow(
+                `Warning: pid ${killed.join(', ')} did not exit when asked and was killed with its process group.`,
+              ));
+            }
           } catch (err) {
             console.error(chalk.red(`Error: ${err instanceof Error ? err.message : err}`));
             process.exit(1);

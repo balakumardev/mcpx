@@ -5,7 +5,9 @@ import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
-import type { TransportConfig, ToolInfo, ServerMeta, ParamProviderConfig } from './types.js';
+import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import { describeOmittedParts, normalizeToolResult } from './tool-result.js';
+import type { TransportConfig, ToolInfo, ToolAnnotations, ServerMeta, ParamProviderConfig } from './types.js';
 
 /**
  * Per-call MCP request timeout, in milliseconds. The MCP SDK defaults to 60s
@@ -51,6 +53,13 @@ function cacheKey(config: ParamProviderConfig): string {
   return `${config.command} ${(config.args ?? []).join(' ')}`;
 }
 
+/** The command line and output of a failing provider go to this process's stderr only under MCPKIT_DEBUG=1. */
+function debugParamProvider(config: ParamProviderConfig, what: string, output: string): void {
+  if (process.env.MCPKIT_DEBUG !== '1') return;
+  const commandLine = [config.command, ...(config.args ?? [])].join(' ');
+  process.stderr.write(`mcpkit [debug] param provider "${commandLine}" ${what}: ${output.slice(0, 2000)}\n`);
+}
+
 /**
  * Execute a paramProvider command and return its parsed JSON output.
  * Results are cached by TTL if configured.
@@ -71,7 +80,12 @@ export async function runParamProvider(config: ParamProviderConfig): Promise<Rec
   const stdout = await new Promise<string>((resolve, reject) => {
     execFile(cmd, args, { timeout: 30_000 }, (err, stdout, stderr) => {
       if (err) {
-        reject(new Error(`paramProvider "${config.command}" failed: ${stderr || err.message}`));
+        // The provider's output and command line can hold credentials, and this message
+        // reaches scripts and agents: it carries only sizes and the exit status.
+        const failure = err as NodeJS.ErrnoException & { killed?: boolean; signal?: string | null };
+        const status = failure.killed === true ? `killed by ${failure.signal ?? 'a signal'}` : `exit code ${failure.code ?? 'unknown'}`;
+        debugParamProvider(config, `failed (${status})`, `${stderr}${stdout}`);
+        reject(new Error(`the param provider failed (${status}, ${Buffer.byteLength(stderr) + Buffer.byteLength(stdout)} bytes of output)`));
       } else {
         resolve(stdout.trim());
       }
@@ -82,7 +96,8 @@ export async function runParamProvider(config: ParamProviderConfig): Promise<Rec
   try {
     data = JSON.parse(stdout);
   } catch {
-    throw new Error(`paramProvider "${config.command}" returned non-JSON output: ${stdout.slice(0, 200)}`);
+    debugParamProvider(config, 'returned non-JSON output', stdout);
+    throw new Error(`the param provider returned non-JSON output (${Buffer.byteLength(stdout)} bytes)`);
   }
 
   if (config.ttl && config.ttl > 0) {
@@ -268,12 +283,34 @@ export interface ToolCall {
   params: Record<string, unknown>;
 }
 
+/** One finished tool call. */
+export interface ToolCallOutput {
+  /** What `call` prints by default: the text parts, else structured content. Never an image, audio or resource. */
+  text: string;
+  /** The normalised result (see `normalizeToolResult`): what `call --json` prints. */
+  value: unknown;
+  /** The server flagged the call as failed (`isError: true`). */
+  isError: boolean;
+  /**
+   * What `text` leaves out: one description per kind of image, audio or resource part in the result
+   * (see `describeOmittedParts`). Absent when nothing is left out. A persistent runtime sends the
+   * same list over its socket, so it is also set on the daemon path.
+   */
+  omitted?: string[];
+}
+
 export interface ConnectedToolSession {
   client: Client;
   transport: Transport;
   close(): Promise<void>;
-  callTool(toolName: string, params: Record<string, unknown>): Promise<string>;
-  callToolsChained(calls: ToolCall[]): Promise<string[]>;
+  callTool(toolName: string, params: Record<string, unknown>): Promise<ToolCallOutput>;
+  /** Runs the calls in order and stops after the first one that reports `isError`, which is then the last output. */
+  callToolsChained(calls: ToolCall[]): Promise<ToolCallOutput[]>;
+}
+
+export interface ConnectToolSessionOptions {
+  /** Per-call MCP request timeout in ms. Defaults to MCPKIT_CALL_TIMEOUT_MS, else 15 minutes. */
+  timeoutMs?: number;
 }
 
 /**
@@ -373,6 +410,66 @@ async function fetchPypiDescription(packageName: string): Promise<string | undef
 }
 
 /**
+ * Upper bound on `tools/list` pages followed in one discovery. A server that
+ * keeps returning fresh cursors forever must not hang `install`/`update`.
+ */
+const MAX_TOOL_LIST_PAGES = 100;
+
+const BOOLEAN_ANNOTATION_HINTS = ['readOnlyHint', 'destructiveHint', 'idempotentHint', 'openWorldHint'] as const;
+
+/** Copy only the known annotation fields, with the types the protocol defines. */
+function mapAnnotations(raw: unknown): ToolAnnotations | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const source = raw as Record<string, unknown>;
+  const annotations: ToolAnnotations = {};
+  if (typeof source.title === 'string') annotations.title = source.title;
+  for (const key of BOOLEAN_ANNOTATION_HINTS) {
+    const value = source[key];
+    if (typeof value === 'boolean') annotations[key] = value;
+  }
+  return Object.keys(annotations).length > 0 ? annotations : undefined;
+}
+
+function toToolInfo(tool: Tool): ToolInfo {
+  const annotations = mapAnnotations(tool.annotations);
+  return {
+    name: tool.name,
+    ...(typeof tool.title === 'string' ? { title: tool.title } : {}),
+    description: tool.description ?? '',
+    inputSchema: tool.inputSchema,
+    ...(tool.outputSchema ? { outputSchema: tool.outputSchema } : {}),
+    ...(annotations ? { annotations } : {}),
+  };
+}
+
+/**
+ * Follow `nextCursor` until the server has no more pages. Stops early on a
+ * repeated cursor (a server that loops) and after MAX_TOOL_LIST_PAGES pages;
+ * tools are de-duplicated by name, first occurrence wins.
+ */
+async function listAllTools(client: Client): Promise<ToolInfo[]> {
+  const tools: ToolInfo[] = [];
+  const seenNames = new Set<string>();
+  const seenCursors = new Set<string>();
+  let cursor: string | undefined;
+
+  for (let page = 0; page < MAX_TOOL_LIST_PAGES; page++) {
+    const result = await client.listTools(cursor === undefined ? undefined : { cursor });
+    for (const tool of result.tools) {
+      if (seenNames.has(tool.name)) continue;
+      seenNames.add(tool.name);
+      tools.push(toToolInfo(tool));
+    }
+
+    cursor = result.nextCursor;
+    if (!cursor || seenCursors.has(cursor)) break;
+    seenCursors.add(cursor);
+  }
+
+  return tools;
+}
+
+/**
  * Connect to an MCP server, list its tools, then disconnect.
  */
 export async function discoverTools(
@@ -404,12 +501,7 @@ export async function discoverTools(
       }
     }
 
-    const result = await client.listTools();
-    const tools = result.tools.map((tool) => ({
-      name: tool.name,
-      description: tool.description ?? '',
-      inputSchema: tool.inputSchema,
-    }));
+    const tools = await listAllTools(client);
 
     return { tools, serverMeta };
   } finally {
@@ -418,8 +510,10 @@ export async function discoverTools(
 }
 
 /**
- * Extract a text string from an MCP tool result.
- * Priority: text content parts → structuredContent → toolResult → non-text content → empty.
+ * The text `call` prints for an MCP tool result.
+ * Priority: text content parts, structuredContent, toolResult, empty. Image, audio and
+ * resource parts are never printed (a screenshot would be a megabyte of base64);
+ * `toToolCallOutput` lists them in `omitted` instead.
  */
 function extractResultText(result: Record<string, unknown>): string {
   // Text content parts
@@ -440,12 +534,21 @@ function extractResultText(result: Record<string, unknown>): string {
     return String(result.toolResult);
   }
 
-  // Last resort: serialize non-text content (images, resources, etc.)
-  if ('content' in result && Array.isArray(result.content) && result.content.length > 0) {
-    return JSON.stringify(result.content, null, 2);
-  }
-
   return '';
+}
+
+function toToolCallOutput(result: Record<string, unknown>): ToolCallOutput {
+  const normalized = normalizeToolResult(result);
+  const legacyToolResult = 'toolResult' in result
+    && !Array.isArray(result.content)
+    && result.structuredContent == null;
+  const omitted = describeOmittedParts(result.content);
+  return {
+    text: extractResultText(result),
+    value: legacyToolResult ? result.toolResult : normalized.value,
+    isError: normalized.isError,
+    ...(omitted.length > 0 ? { omitted } : {}),
+  };
 }
 
 /**
@@ -456,6 +559,7 @@ export async function connectToolSession(
   authProvider?: OAuthClientProvider,
   paramProvider?: ParamProviderConfig,
   envHints?: Record<string, string>,
+  options: ConnectToolSessionOptions = {},
 ): Promise<ConnectedToolSession> {
   const client = new Client({ name: 'mcpkit', version: __PKG_VERSION__ });
   const transport = createTransport(config, authProvider, envHints);
@@ -466,9 +570,9 @@ export async function connectToolSession(
     return closePromise;
   };
 
-  const callTimeoutMs = resolveCallTimeoutMs();
+  const callTimeoutMs = options.timeoutMs ?? resolveCallTimeoutMs();
 
-  const callSingleTool = async (toolName: string, params: Record<string, unknown>): Promise<string> => {
+  const callSingleTool = async (toolName: string, params: Record<string, unknown>): Promise<ToolCallOutput> => {
     const injectedParams = paramProvider ? await runParamProvider(paramProvider) : {};
     const finalParams = paramProvider ? mergeParams(params, injectedParams) : params;
     const result = await client.callTool(
@@ -476,7 +580,7 @@ export async function connectToolSession(
       undefined,
       { timeout: callTimeoutMs },
     );
-    return extractResultText(result as Record<string, unknown>);
+    return toToolCallOutput(result as Record<string, unknown>);
   };
 
   try {
@@ -491,9 +595,9 @@ export async function connectToolSession(
     transport,
     close,
     callTool: callSingleTool,
-    async callToolsChained(calls: ToolCall[]): Promise<string[]> {
+    async callToolsChained(calls: ToolCall[]): Promise<ToolCallOutput[]> {
       const injectedParams = paramProvider ? await runParamProvider(paramProvider) : {};
-      const results: string[] = [];
+      const outputs: ToolCallOutput[] = [];
       let prevResult: Record<string, unknown> = {};
 
       for (const { toolName, params } of calls) {
@@ -504,25 +608,27 @@ export async function connectToolSession(
           undefined,
           { timeout: callTimeoutMs },
         );
-        const text = extractResultText(result as Record<string, unknown>);
+        const output = toToolCallOutput(result as Record<string, unknown>);
+        outputs.push(output);
+
+        // Later steps would be fed the error text through $prev, so a failed step ends the chain.
+        if (output.isError) break;
 
         // Parse result as JSON for $prev substitution in subsequent calls
         try {
-          prevResult = JSON.parse(text);
+          prevResult = JSON.parse(output.text);
         } catch {
-          prevResult = { _text: text };
+          prevResult = { _text: output.text };
         }
-
-        results.push(text);
       }
 
-      return results;
+      return outputs;
     },
   };
 }
 
 /**
- * Connect to an MCP server, invoke a tool, extract the text result, then disconnect.
+ * Connect to an MCP server, invoke a tool, then disconnect.
  */
 export async function callTool(
   config: TransportConfig,
@@ -531,7 +637,7 @@ export async function callTool(
   authProvider?: OAuthClientProvider,
   paramProvider?: ParamProviderConfig,
   envHints?: Record<string, string>,
-): Promise<string> {
+): Promise<ToolCallOutput> {
   const session = await connectToolSession(config, authProvider, paramProvider, envHints);
 
   try {
@@ -545,7 +651,7 @@ export async function callTool(
  * Connect once, invoke multiple tools sequentially in the same session, then disconnect.
  * Supports $prev.field substitution: params referencing "$prev.fieldName" are replaced
  * with the corresponding field from the previous tool's parsed JSON output.
- * Returns an array of text results, one per call.
+ * Returns one output per executed call; the chain stops after the first call that reports `isError`.
  */
 export async function callToolsChained(
   config: TransportConfig,
@@ -553,7 +659,7 @@ export async function callToolsChained(
   authProvider?: OAuthClientProvider,
   paramProvider?: ParamProviderConfig,
   envHints?: Record<string, string>,
-): Promise<string[]> {
+): Promise<ToolCallOutput[]> {
   const session = await connectToolSession(config, authProvider, paramProvider, envHints);
 
   try {

@@ -1,12 +1,24 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
-import { getServer, removeServer, addServer } from '../config.js';
+import { getServer, removeServer, updateServer } from '../config.js';
 import { getGenerator } from '../generators/index.js';
 import { loadAgentSettings, normalizeAgentList, resolveServerAgents } from '../agent-config.js';
 import { stopRuntime } from '../runtime-manager.js';
+import { removeSchemaCache } from '../schema-store.js';
 import { removeSkillDirectory } from '../skill-file.js';
 import { ALL_AGENTS } from '../types.js';
 import type { AgentType } from '../types.js';
+
+/** Best-effort: a leftover cache file is harmless and must not fail the removal. */
+async function dropSchemaCache(name: string): Promise<void> {
+  try {
+    await removeSchemaCache(name);
+  } catch (err) {
+    console.error(chalk.dim(
+      `⚠ could not remove the tool schema cache for "${name}" (${err instanceof Error ? err.message : err})`,
+    ));
+  }
+}
 
 export function createRemoveCommand(): Command {
   return new Command('remove')
@@ -50,6 +62,7 @@ Examples:
         if (!opts.agent) {
           await stopRuntime(name, { removeLog: true });
           await removeServer(name);
+          await dropSchemaCache(name);
           console.log(chalk.green(`✓ Server "${name}" removed from registry`));
         } else {
           const nextAgents = resolved.agents.filter(a => a !== opts.agent);
@@ -58,10 +71,15 @@ Examples:
           if (entry.agents.length === 0) {
             await stopRuntime(name, { removeLog: true });
             await removeServer(name);
+            await dropSchemaCache(name);
             console.log(chalk.green(`✓ Server "${name}" removed from registry (no agents left)`));
           } else {
             entry.updatedAt = new Date().toISOString();
-            await addServer(entry);
+            await updateServer(name, (current) => {
+              current.agentSelectionMode = entry.agentSelectionMode;
+              current.agents = entry.agents;
+              current.updatedAt = entry.updatedAt;
+            });
             console.log(chalk.green(`✓ Removed ${opts.agent} skill for "${name}"`));
           }
         }

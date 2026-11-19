@@ -1,13 +1,13 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { GeneratorContext, GeneratedSkill } from '../types.js';
-import { buildSkillContent } from './index.js';
+import { buildSkillContent, skillFilePath } from './index.js';
 
 export function generate(ctx: GeneratorContext): GeneratedSkill {
-  const skillDir = `mcpkit-${ctx.serverName}`;
-  const filePath = ctx.scope === 'global'
-    ? join(homedir(), '.cursor', 'skills', skillDir, 'SKILL.md')
-    : join(process.cwd(), '.cursor', 'skills', skillDir, 'SKILL.md');
+  const skillsRoot = ctx.scope === 'global'
+    ? join(homedir(), '.cursor', 'skills')
+    : join(process.cwd(), '.cursor', 'skills');
+  const filePath = skillFilePath(skillsRoot, ctx.serverName);
 
   return {
     agent: 'cursor',

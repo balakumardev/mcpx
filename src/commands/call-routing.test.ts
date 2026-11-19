@@ -22,7 +22,9 @@ describe('createCallCommand persistent runtime routing', () => {
     };
 
     const getServer = vi.fn().mockResolvedValue(entry);
-    const callPersistentRuntime = vi.fn().mockResolvedValue(['runtime-result']);
+    const callPersistentRuntime = vi.fn().mockResolvedValue([
+      { text: 'runtime-result', value: 'runtime-result', isError: false },
+    ]);
     const stdoutWrite = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
 
     vi.doMock('../config.js', () => ({
@@ -45,6 +47,9 @@ describe('createCallCommand persistent runtime routing', () => {
     });
     vi.doMock('../runtime-manager.js', () => ({
       callPersistentRuntime,
+    }));
+    vi.doMock('../auto-refresh.js', () => ({
+      maybeAutoRefresh: vi.fn(),
     }));
 
     const { createCallCommand } = await import('./call.js');
