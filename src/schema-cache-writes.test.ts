@@ -81,6 +81,7 @@ describe('schema cache is written where tools are discovered', () => {
     } else {
       process.env.HOME = originalHome;
     }
+    vi.unstubAllEnvs();
     await rm(homeDir, { recursive: true, force: true });
     vi.restoreAllMocks();
     vi.clearAllMocks();
@@ -123,6 +124,11 @@ describe('schema cache is written where tools are discovered', () => {
   });
 
   describe('sync', () => {
+    // A server is discovered by `sync` when it has no per-server skill to find yet; under the default (the guide) it has none to write.
+    beforeEach(() => {
+      vi.stubEnv('MCPKIT_SKILLS', 'per-server');
+    });
+
     async function writeSkillFile(entry: ServerEntry): Promise<void> {
       const generate = await getGenerator('claude-code');
       const { filePath } = generate({

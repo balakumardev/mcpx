@@ -66,6 +66,8 @@ describe('update', () => {
   beforeEach(async () => {
     homeDir = await mkdtemp(join(tmpdir(), 'mcpkit-update-'));
     process.env.HOME = homeDir;
+    // This file is about update refreshing per-server skills; the default (the guide) writes none.
+    vi.stubEnv('MCPKIT_SKILLS', 'per-server');
     logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -78,6 +80,7 @@ describe('update', () => {
     } else {
       process.env.HOME = originalHome;
     }
+    vi.unstubAllEnvs();
     await rm(homeDir, { recursive: true, force: true });
     vi.restoreAllMocks();
     vi.clearAllMocks();

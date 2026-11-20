@@ -3,6 +3,7 @@ import chalk from 'chalk';
 import { getServer, listServers } from '../config.js';
 import { refreshServer } from '../auto-refresh.js';
 import { writeMetaSkill } from '../meta-skill.js';
+import { reconcileAfterChange } from '../reconcile.js';
 import { OAuthRequiredError } from '../oauth-required-error.js';
 import { scrubSecrets } from '../sandbox/redact.js';
 import type { AgentType, ServerEntry } from '../types.js';
@@ -70,6 +71,9 @@ Examples:
         if (metaAgents.size > 0) {
           await writeMetaSkill({ agents: [...metaAgents], scope: 'global', logPrefix: '  ' });
         }
+
+        // The caches written above may be what a kept per-server skill was waiting for.
+        await reconcileAfterChange();
 
         const skippedNote = needSignIn.length > 0 ? `; ${needSignIn.length} skipped, needs sign-in: ${needSignIn.join(', ')}` : '';
         const updated = servers.length - failed.length - needSignIn.length;

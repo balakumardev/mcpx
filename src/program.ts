@@ -1,0 +1,46 @@
+import { Command } from 'commander';
+import { createInstallCommand } from './commands/install.js';
+import { createCallCommand } from './commands/call.js';
+import { createListCommand } from './commands/list.js';
+import { createRemoveCommand } from './commands/remove.js';
+import { createUpdateCommand } from './commands/update.js';
+import { createSyncCommand } from './commands/sync.js';
+import { createViewCommand } from './commands/view.js';
+import { createEditCommand } from './commands/edit.js';
+import { createAuthCommand } from './commands/auth.js';
+import { createAgentsCommand } from './commands/agents.js';
+import { createRuntimeCommand } from './commands/runtime.js';
+import { createSearchCommand } from './commands/search.js';
+import { createDescribeCommand } from './commands/describe.js';
+import { createTypesCommand } from './commands/gen-types.js';
+import { createExecCommand, createSandboxWorkerCommand } from './commands/exec.js';
+import { createHookCommand } from './commands/hook.js';
+import { createConfigCommand } from './commands/config.js';
+
+/** The `mcpkit` command tree, without anything that runs at start-up: `cli.ts` adds that. */
+export function createProgram(version: string): Command {
+  const program = new Command()
+    .name('mcpkit')
+    .description('Turn any MCP server into CLI commands + lightweight agent skills')
+    .version(version);
+
+  program.addCommand(createInstallCommand());
+  program.addCommand(createCallCommand());
+  program.addCommand(createListCommand());
+  program.addCommand(createRemoveCommand());
+  program.addCommand(createUpdateCommand());
+  program.addCommand(createSyncCommand());
+  program.addCommand(createViewCommand());
+  program.addCommand(createEditCommand());
+  program.addCommand(createAuthCommand());
+  program.addCommand(createAgentsCommand());
+  program.addCommand(createRuntimeCommand());
+  program.addCommand(createSearchCommand());
+  program.addCommand(createDescribeCommand());
+  program.addCommand(createTypesCommand());
+  program.addCommand(createExecCommand());
+  program.addCommand(createHookCommand());
+  program.addCommand(createConfigCommand());
+  program.addCommand(createSandboxWorkerCommand(), { hidden: true });
+  return program;
+}

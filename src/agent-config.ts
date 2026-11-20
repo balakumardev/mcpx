@@ -346,6 +346,57 @@ export function resolveServerAgents(
   };
 }
 
+/**
+ * The agents `entry` is installed for, as `resolveServerAgents` says: the rule that picks where a
+ * server's per-server skill is written, which the guide, the SessionStart hook and the skills must all
+ * agree with. In short:
+ *   - an entry in `explicit` mode (chosen with `--agent` / `config`) serves the agents it lists, and
+ *     an empty list serves Claude Code only;
+ *   - an entry in `defaults` mode (the default when no mode is stored) serves the saved default
+ *     agents of settings.yaml, whatever its stored list says: that list is only a record of the last
+ *     write, so an agent enabled after the server was installed is served at once. Without saved
+ *     defaults it serves its stored list (the legacy case), and an empty one serves Claude Code only.
+ * There is no "an empty list serves every agent". A missing `agents` list (a hand-edited registry, which
+ * the registry check lets through) counts as an empty one. Throws for a list that names an unknown agent.
+ */
+function agentsOfEntry(entry: ServerEntry, settings: AgentSettings | null | undefined): AgentType[] {
+  return resolveServerAgents(Array.isArray(entry.agents) ? entry : { ...entry, agents: [] }, settings).agents;
+}
+
+/** The agents of each server of `entries`, for the servers whose agent list can be read (one with an invalid list is left out; the commands that use it report it). */
+export function resolveEntryAgents(
+  entries: Iterable<ServerEntry>,
+  settings: AgentSettings | null | undefined,
+): Array<{ entry: ServerEntry; agents: AgentType[] }> {
+  const found: Array<{ entry: ServerEntry; agents: AgentType[] }> = [];
+  for (const entry of entries) {
+    try {
+      found.push({ entry, agents: agentsOfEntry(entry, settings) });
+    } catch {
+      // A server whose agent list is invalid is reported by the commands that use it.
+    }
+  }
+  return found;
+}
+
+/** Whether `agent` is one of the agents `entry` is installed for (rule: `agentsOfEntry`). An entry that lists an agent mcpkit does not know serves none, as in `resolveEntryAgents`. */
+export function entryServesAgent(
+  entry: ServerEntry,
+  settings: AgentSettings | null | undefined,
+  agent: AgentType,
+): boolean {
+  try {
+    return agentsOfEntry(entry, settings).includes(agent);
+  } catch {
+    return false;
+  }
+}
+
+/** The agents, in the order of `ALL_AGENTS`, that at least one of `servers` is installed for. */
+export function agentsInUse(servers: ReadonlyArray<{ agents: AgentType[] }>): AgentType[] {
+  return ALL_AGENTS.filter((candidate) => servers.some((server) => server.agents.includes(candidate)));
+}
+
 export function describeAgentSource(source: InstallAgentSelectionResult['source'] | ResolvedServerAgents['source']): string {
   switch (source) {
     case 'explicit':

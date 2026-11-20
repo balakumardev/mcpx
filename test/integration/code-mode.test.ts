@@ -98,7 +98,7 @@ afterAll(() => {
 });
 
 describe('code mode through the built CLI', () => {
-  it('installs the fixture server and writes the registry entry and the skill files', () => {
+  it('installs the fixture server, writes the registry entry and a guide that lists it (the built-in default is lean: no per-server skill)', () => {
     const spec = JSON.stringify({ mcpServers: { fx: { command: process.execPath, args: [fixturePath] } } });
     const { code, stdout, stderr } = cli(['install', spec, '--agent', 'claude-code', '--scope', 'global']);
 
@@ -111,11 +111,15 @@ describe('code mode through the built CLI', () => {
     expect(registry.servers.fx.transport).toMatchObject({ type: 'stdio', command: process.execPath });
     expect(registry.servers.fx.toolCount).toBe(7);
 
-    expect(existsSync(join(home, '.claude', 'skills', 'mcpkit-fx', 'SKILL.md'))).toBe(true);
+    expect(existsSync(join(home, '.claude', 'skills', 'mcpkit-fx'))).toBe(false);
     const guide = readFileSync(join(home, '.claude', 'skills', 'mcpkit-cli', 'SKILL.md'), 'utf-8');
     for (const command of ['mcpkit search', 'mcpkit describe', 'mcpkit types', 'mcpkit exec', '--allow-read-only']) {
       expect(guide).toContain(command);
     }
+    // The guide names the server it was written after, in its description and in its body.
+    expect(guide).toMatch(/^description: ".*MCP tools behind mcpkit \(use it for anything these servers cover\): fx/m);
+    expect(guide).toContain('## MCP servers reachable through mcpkit (live list)');
+    expect(guide).toContain('- fx (7 tools');
   });
 
   it('caches the tool schemas with outputSchema and annotations', () => {

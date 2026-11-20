@@ -4,11 +4,12 @@ import { join, resolve } from 'node:path';
 import chalk from 'chalk';
 import { Command, InvalidArgumentError, Option } from 'commander';
 import type { CommanderError } from 'commander';
-import { loadRegistry } from '../config.js';
+import { loadDirectoryServers } from '../directory.js';
 import {
   DEFAULT_MATCHER,
   HOOK_COMMAND,
   SettingsRefusal,
+  UnsafeRewrite,
   backupFile,
   installHook,
   uninstallHook,
@@ -16,10 +17,9 @@ import {
   writeSettings,
 } from '../hook-settings.js';
 import type { SettingsEdit } from '../hook-settings.js';
-import { loadSchemaCache } from '../schema-store.js';
 import { jsonLine } from '../search-index.js';
+import { loadState, updateState } from '../state.js';
 import { DEFAULT_MAX_CHARS, MIN_MAX_CHARS, buildSessionContext } from '../session-context.js';
-import type { DirectoryServer } from '../session-context.js';
 
 const HOOK_AGENTS = ['claude-code', 'codex', 'cursor', 'windsurf', 'augment'] as const;
 type HookAgent = typeof HOOK_AGENTS[number];
@@ -100,38 +100,7 @@ export function drainStdin(input: HookInput, capMs: number = STDIN_CAP_MS): Prom
   });
 }
 
-/** `task` with `console.warn` silenced: loading the registry warns about entries it skips, and a hook says nothing. */
-async function withoutWarnings<T>(task: () => Promise<T>): Promise<T> {
-  const warn = console.warn;
-  console.warn = () => {};
-  try {
-    return await task();
-  } finally {
-    console.warn = warn;
-  }
-}
-
-/**
- * The servers the directory lists for `agent`, read from the registry and the schema caches only:
- * nothing is started, contacted or written. A server whose entry lists no agents, or an empty
- * list, serves every agent. A server without a usable schema cache (none yet, unreadable, empty,
- * corrupt or of another version) is still listed, from its registry entry alone: one bad cache
- * must not hide the other servers.
- */
-export async function loadDirectoryServers(agent: HookAgent): Promise<DirectoryServer[]> {
-  const registry = await withoutWarnings(loadRegistry);
-  const entries = Object.values(registry.servers)
-    .filter((entry) => entry.agents === undefined || entry.agents.length === 0 || entry.agents.includes(agent));
-  return Promise.all(entries.map(async (entry) => {
-    const cache = await loadSchemaCache(entry.name);
-    return {
-      name: entry.name,
-      // A hand-edited registry can hold anything here; only text is a description.
-      description: typeof entry.description === 'string' ? entry.description : undefined,
-      ...(cache === null ? {} : { tools: cache.tools }),
-    };
-  }));
-}
+export { loadDirectoryServers };
 
 export interface SessionStartOptions {
   agent: HookAgent;
@@ -211,6 +180,26 @@ function printPreview(action: 'install' | 'uninstall', path: string, before: str
     : `Run it again with --write to apply this. The original is backed up first, to ${path}.mcpkit-bak-<timestamp>.`);
 }
 
+/**
+ * Remember, in the state file, that the user turned the hook off (uninstall) or on (install), so that the
+ * start-up reconcile does not put it back or take it away. Only the global settings file counts, however
+ * its path was given (`--settings ~/.claude/settings.json` is the same file as no `--settings`): a hook
+ * edited in a project's settings is not a choice about the global one. Best effort: it never fails the command,
+ * and an install writes nothing when there is no refusal on record.
+ */
+async function recordHookChoice(action: 'install' | 'uninstall', settingsPath: string): Promise<void> {
+  try {
+    if (settingsPath !== resolve(join(homedir(), '.claude', 'settings.json'))) return;
+    const declined = action === 'uninstall';
+    if (!declined && !loadState().state.hookDeclined) return;
+    await updateState((state) => {
+      state.hookDeclined = declined;
+    }, { timeoutMs: 1500 });
+  } catch {
+    // The settings file was edited; the record of why is a courtesy.
+  }
+}
+
 async function editSettings(action: 'install' | 'uninstall', options: SettingsOptions): Promise<void> {
   try {
     if (options.agent !== 'claude-code') {
@@ -230,6 +219,7 @@ async function editSettings(action: 'install' | 'uninstall', options: SettingsOp
       console.log(action === 'install'
         ? `The SessionStart hook is already installed in ${path} (matcher ${matcherOf(edit.entry)}). Nothing to change.`
         : `The SessionStart hook is not installed in ${path}. Nothing to change.`);
+      if (options.write) await recordHookChoice(action, path);
       return;
     }
     if (!options.write) {
@@ -239,10 +229,16 @@ async function editSettings(action: 'install' | 'uninstall', options: SettingsOp
 
     if (before !== undefined) console.log(`Backed up the original to ${await backupFile(path)}`);
     await writeSettings(path, edit.text);
+    await recordHookChoice(action, path);
     console.log(action === 'install'
       ? `${edit.replaced?.length ? 'Updated' : 'Installed'} the SessionStart hook in ${path}: new sessions run \`${HOOK_COMMAND}\`. Undo with: mcpkit hook uninstall --write`
       : `Removed the SessionStart hook from ${path}.`);
   } catch (err) {
+    if (err instanceof UnsafeRewrite) {
+      // The file cannot be rewritten, so the entry goes to the user to put in by hand: the preview is what it is for.
+      console.log(action === 'install' ? 'Entry to add by hand under hooks.SessionStart:' : 'Hook entries to remove by hand from hooks.SessionStart:');
+      console.log(Array.isArray(err.entry) ? err.entry.map(pretty).join('\n') : pretty(err.entry));
+    }
     const message = err instanceof Error ? err.message : String(err);
     console.error(chalk.red(`Error: ${message}${err instanceof SettingsRefusal ? '. Nothing was written.' : ''}`));
     process.exitCode = 1;
@@ -282,9 +278,11 @@ export function createHookCommand(io?: HookIo): Command {
     .addOption(new Option('--format <format>', 'json is the Claude Code hook protocol; text is the same text, raw').choices(FORMATS).default('json'))
     .addOption(new Option('--max-chars <n>', `size to fit the text in; a smaller value than ${MIN_MAX_CHARS} counts as ${MIN_MAX_CHARS}`).argParser(nonNegativeInteger).default(DEFAULT_MAX_CHARS))
     .addHelpText('after', `
-Reads the server registry and the schema caches and nothing else: it never contacts a
-server, starts a process or writes a file. It lists each server of the agent (a server
-with no agents listed counts for every agent) with its tool counts and registry
+Reads the server registry, the schema caches and the saved default agents (settings.yaml)
+and nothing else: it never contacts a server, starts a process or writes a file. It lists
+each server installed for the agent, by the rule that places per-server skills (an explicit
+agent list is used as it is; a server on the defaults follows the saved default agents, so an
+agent enabled later lists it too), with its tool counts and registry
 description, names servers that have an identical tool set, and ends with the five-line
 workflow for search, describe, exec and call. When the list does not fit --max-chars,
 descriptions are cut to 80 characters, then the tool counts are dropped, then the
@@ -318,12 +316,15 @@ Examples:
 Without --write it prints the entry it would add under hooks.SessionStart and a diff, and
 writes nothing. With --write it first copies the original settings to
 <settings>.mcpkit-bak-<yyyymmddhhmmss> (owner-only), then writes the merged file atomically,
-keeping every other key, every other hook and the key order; a missing file and its
+keeping every other key and every other hook, the key order (except integer-like keys, which
+JavaScript puts first), the indentation, the line endings (CRLF stays CRLF) and the final newline; a missing file and its
 folders are created. The command it installs is \`${HOOK_COMMAND}\`: an
 mcpkit that is missing, or too old to have this command, never shows an error. Installing twice
 changes nothing, and an earlier entry of ours (any command that starts with
 \`mcpkit hook session-start\`) is updated in place, not duplicated. It refuses a file that is not valid
-JSON or whose hooks or hooks.SessionStart have an unexpected type (exit 1, nothing written).
+JSON, whose hooks or hooks.SessionStart have an unexpected type, or that holds a number the rewrite
+would change (an integer beyond 2^53 such as 12345678901234567890, or 1.0, 1e3, -0): exit 1,
+nothing written; for the last case it prints the entry to add by hand.
 Only claude-code is supported; for other agents use \`session-start --format text\`.
 The default matcher omits "fork": add it with --matcher if you fork sessions.
 

@@ -9,6 +9,8 @@ import { createUpdateCommand } from './commands/update.js';
 import { maybeAutoRefresh, refreshServer } from './auto-refresh.js';
 import { addServer, getServer } from './config.js';
 import { discoverForEntry } from './discover.js';
+import { loadDirectoryServers } from './directory.js';
+import { buildGuideDirectory } from './guide-directory.js';
 import { buildMetaSkillContent } from './meta-skill.js';
 import { loadSchemaCache } from './schema-store.js';
 import { reconcileSkillFiles } from './skill-sync.js';
@@ -45,6 +47,8 @@ describe('skill mode guide, wherever per-server skills are produced', () => {
   const skillsDir = (agent = '.claude') => join(home, agent, 'skills');
   const perServerSkill = (agent: AgentType, name: string) => generatedSkill(agent, name).then((skill) => skill.path);
   const guideOf = (agent = '.claude') => join(skillsDir(agent), 'mcpkit-cli', 'SKILL.md');
+  /** The guide of an agent in guide mode: the generic text and the directory of the servers that serve it. */
+  const guideListing = async (agent: AgentType = 'claude-code') => buildMetaSkillContent({ directory: buildGuideDirectory(await loadDirectoryServers(agent)) });
 
   beforeEach(async () => {
     home = await mkdtemp(join(tmpdir(), 'mcpkit-enforce-'));
@@ -74,6 +78,7 @@ describe('skill mode guide, wherever per-server skills are produced', () => {
 
     it('writes only the agents that are not in guide mode', async () => {
       await saveSkillMode('guide', 'claude-code');
+      await saveSkillMode('per-server', 'cursor');
 
       await reconcileSkillFiles({ ctx, nextAgents: ['claude-code', 'cursor'] });
 
@@ -136,7 +141,13 @@ describe('skill mode guide, wherever per-server skills are produced', () => {
       expect(await readFile(join(project, '.claude', 'skills', 'mcpkit-demo', 'SKILL.md'), 'utf-8')).toContain('name: mcpkit-demo');
     });
 
-    it('is unchanged with no setting: the skill of every agent is written', async () => {
+    it('writes nothing with no setting: the built-in default is the guide', async () => {
+      await reconcileSkillFiles({ ctx, nextAgents: ['claude-code', 'cursor'] });
+      expect(await readdir(home)).toEqual([]);
+    });
+
+    it('is unchanged for agents on per-server: the skill of every agent is written', async () => {
+      await saveSkillMode('per-server');
       await reconcileSkillFiles({ ctx, nextAgents: ['claude-code', 'cursor'] });
       for (const agent of ['claude-code', 'cursor'] as const) {
         expect(await readFile(await perServerSkill(agent, 'demo'), 'utf-8')).toContain('name: mcpkit-demo');
@@ -165,7 +176,10 @@ describe('skill mode guide, wherever per-server skills are produced', () => {
       await install('node ./server.js', '-n', 'demo', '-a', 'claude-code');
 
       expect(existsSync(await perServerSkill('claude-code', 'demo'))).toBe(false);
-      expect(await readFile(guideOf(), 'utf-8')).toBe(buildMetaSkillContent());
+      // The guide lists the server that was just installed: it is written after the registry and the cache.
+      const guide = await readFile(guideOf(), 'utf-8');
+      expect(guide).toBe(await guideListing());
+      expect(guide).toContain('- demo');
       expect((await getServer('demo'))?.agents).toEqual(['claude-code']);
       expect((await loadSchemaCache('demo'))?.tools).toEqual(tools);
       expect(out.join('\n')).toMatch(/claude-code.*skills mode: guide/);
@@ -173,6 +187,7 @@ describe('skill mode guide, wherever per-server skills are produced', () => {
 
     it('still writes the per-server skill for the other agents of the same install', async () => {
       await saveSkillMode('guide', 'claude-code');
+      await saveSkillMode('per-server', 'cursor');
 
       await install('node ./server.js', '-n', 'demo', '-a', 'claude-code', '-a', 'cursor');
 
@@ -194,9 +209,17 @@ describe('skill mode guide, wherever per-server skills are produced', () => {
       expect(existsSync(await perServerSkill('claude-code', 'demo'))).toBe(false);
     });
 
-    it('writes the per-server skill when no setting exists', async () => {
+    it('writes no per-server skill when no setting exists: the built-in default is the guide', async () => {
+      await install('node ./server.js', '-n', 'demo', '-a', 'claude-code');
+      expect(existsSync(await perServerSkill('claude-code', 'demo'))).toBe(false);
+      expect(await readFile(guideOf(), 'utf-8')).toBe(await guideListing());
+    });
+
+    it('writes the per-server skill for an agent set to per-server', async () => {
+      await saveSkillMode('per-server', 'claude-code');
       await install('node ./server.js', '-n', 'demo', '-a', 'claude-code');
       expect(existsSync(await perServerSkill('claude-code', 'demo'))).toBe(true);
+      expect(await readFile(guideOf(), 'utf-8')).toBe(buildMetaSkillContent());
     });
 
     it('with --dry-run writes nothing in guide mode either', async () => {
@@ -219,7 +242,8 @@ describe('skill mode guide, wherever per-server skills are produced', () => {
       await sync();
 
       expect(vi.mocked(discoverForEntry)).not.toHaveBeenCalled();
-      expect(await readFile(guideOf(), 'utf-8')).toBe(buildMetaSkillContent());
+      expect(await readFile(guideOf(), 'utf-8')).toBe(await guideListing());
+      expect(await readFile(guideOf(), 'utf-8')).toContain('- demo');
       expect(out.join('\n')).toMatch(/skills mode: guide/);
     });
 
@@ -238,6 +262,7 @@ describe('skill mode guide, wherever per-server skills are produced', () => {
     it('regenerates only the agents that are not in guide mode, and checks only those for existing skills', async () => {
       await addServer(entry('demo', ['claude-code', 'cursor']));
       await saveSkillMode('guide', 'claude-code');
+      await saveSkillMode('per-server', 'cursor');
 
       await sync();
 
@@ -267,6 +292,7 @@ describe('skill mode guide, wherever per-server skills are produced', () => {
     it('update writes no per-server skill for a guide agent, and still refreshes the registry, the cache and the guide', async () => {
       await addServer(entry('demo', ['claude-code', 'cursor']));
       await saveSkillMode('guide', 'claude-code');
+      await saveSkillMode('per-server', 'cursor');
 
       await createUpdateCommand().parseAsync(['demo'], { from: 'user' });
 
@@ -274,8 +300,10 @@ describe('skill mode guide, wherever per-server skills are produced', () => {
       expect(existsSync(await perServerSkill('cursor', 'demo'))).toBe(true);
       expect((await getServer('demo'))?.toolCount).toBe(1);
       expect((await loadSchemaCache('demo'))?.tools).toEqual(tools);
-      expect(existsSync(guideOf())).toBe(true);
-      expect(existsSync(guideOf('.cursor'))).toBe(true);
+      // The guide of the guide agent lists the server, with the cache this very update wrote; the other agent's is generic.
+      expect(await readFile(guideOf(), 'utf-8')).toBe(await guideListing());
+      expect(await readFile(guideOf(), 'utf-8')).toContain('1 tool, 0 read-only');
+      expect(await readFile(guideOf('.cursor'), 'utf-8')).toBe(buildMetaSkillContent());
     });
 
     it('refreshServer leaves the existing skill of a guide agent as it is', async () => {
@@ -301,9 +329,19 @@ describe('skill mode guide, wherever per-server skills are produced', () => {
       expect((await loadSchemaCache('demo'))?.tools).toEqual(tools);
     });
 
-    it('auto-refresh still writes the skill with no setting', async () => {
+    it('auto-refresh with no setting writes no per-server skill: the built-in default is the guide', async () => {
       const server = entry('demo', ['claude-code'], { autoRefresh: { enabled: true, ttlSec: 60 } });
       await addServer(server);
+
+      await maybeAutoRefresh(server);
+
+      expect(existsSync(await perServerSkill('claude-code', 'demo'))).toBe(false);
+    });
+
+    it('auto-refresh still writes the skill of an agent set to per-server', async () => {
+      const server = entry('demo', ['claude-code'], { autoRefresh: { enabled: true, ttlSec: 60 } });
+      await addServer(server);
+      await saveSkillMode('per-server', 'claude-code');
 
       await maybeAutoRefresh(server);
 

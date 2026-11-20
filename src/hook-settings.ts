@@ -17,6 +17,17 @@ export const DEFAULT_MATCHER = 'startup|resume|clear|compact';
 /** The settings file cannot be edited safely; nothing was written. */
 export class SettingsRefusal extends Error {}
 
+/**
+ * The settings file is valid, but writing it back would change something other than the hook: it holds a
+ * number that `JSON.parse` and `JSON.stringify` cannot carry over as it is written. The file is not
+ * rewritten textually, so the edit is refused; `entry` is what the user has to add (or remove) by hand.
+ */
+export class UnsafeRewrite extends SettingsRefusal {
+  constructor(message: string, readonly entry: unknown) {
+    super(message);
+  }
+}
+
 /** The outcome of an install or an uninstall: the settings text to write, whether it differs, and what was added or removed. */
 export interface SettingsEdit {
   changed: boolean;
@@ -29,6 +40,9 @@ export interface SettingsEdit {
 }
 
 type JsonObject = Record<string, unknown>;
+
+const INSTALL_BY_HAND = 'add the SessionStart entry by hand: `mcpkit hook install` (without --write) prints it';
+const UNINSTALL_BY_HAND = 'remove the SessionStart hook entries of ours by hand: `mcpkit hook uninstall` (without --write) prints them';
 
 function isObject(value: unknown): value is JsonObject {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -69,11 +83,79 @@ function sessionStartOf(root: JsonObject): { hooks: JsonObject | undefined; grou
   return { hooks, groups };
 }
 
-/** The settings text for `root`, written the way the original was: same indentation, same final newline (or lack of it). */
+// A JSON number, matched where one starts. Used on text that is valid JSON already, outside its strings.
+const JSON_NUMBER = /-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/y;
+/** The longest number shown in a message. */
+const SHOWN_NUMBER_MAX = 40;
+
+const shown = (text: string): string => (text.length > SHOWN_NUMBER_MAX ? `${text.slice(0, SHOWN_NUMBER_MAX)}...` : text);
+
+/**
+ * The first number of the JSON `text` (outside strings) that does not come back as it is written when the
+ * text is parsed and written again: an integer beyond what a double holds (`12345678901234567890` becomes
+ * `12345678901234567000`), `1.0`, `1e3`, `-0`, a literal with more digits than a double keeps. Undefined when
+ * every number survives. The scan is one pass; `text` must be valid JSON, so every `-` or digit outside a
+ * string starts a number.
+ */
+function firstUnstableNumber(text: string): { literal: string; becomes: string } | undefined {
+  let index = 0;
+  while (index < text.length) {
+    const char = text[index];
+    if (char === '"') {
+      index++;
+      while (index < text.length && text[index] !== '"') index += text[index] === '\\' ? 2 : 1;
+      index++;
+    } else if (char === '-' || (char >= '0' && char <= '9')) {
+      JSON_NUMBER.lastIndex = index;
+      const literal = JSON_NUMBER.exec(text)?.[0];
+      if (literal === undefined) {
+        index++;
+        continue;
+      }
+      const becomes = JSON.stringify(JSON.parse(literal));
+      if (becomes !== literal) return { literal, becomes };
+      index += literal.length;
+    } else {
+      index++;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Refuse to write the settings back when that would change a number: the file is rewritten from the parsed
+ * data, and a number that does not survive is data lost without a word. Only called for an edit that changes
+ * the file (one that does not is never written). `byHand` finishes the message with what the user does
+ * instead. It is a `SettingsRefusal` like a file that is not valid JSON: the command exits 1 and writes nothing.
+ */
+function assertRewritable(original: string | undefined, entry: unknown, byHand: string): void {
+  const unstable = original === undefined ? undefined : firstUnstableNumber(original);
+  if (unstable === undefined) return;
+  // More than 15 digits: a double may not hold it exactly. (A shorter integer, `-0`, that changes is only "a number".)
+  const integer = /^-?\d{16,}$/.test(unstable.literal);
+  const what = integer ? `the integer ${shown(unstable.literal)}, which a JSON parser cannot hold exactly` : `the number ${shown(unstable.literal)}`;
+  throw new UnsafeRewrite(
+    `the settings file has ${what}, and mcpkit rewrites the whole file (it would write ${shown(unstable.becomes)}); ${byHand}`,
+    entry,
+  );
+}
+
+/** The line ending the original uses, the commoner one when it mixes both (a tie, or no line break, is LF). */
+function lineEndingOf(original: string | undefined): '\n' | '\r\n' {
+  const text = original ?? '';
+  const crlf = text.split('\r\n').length - 1;
+  const lf = text.split('\n').length - 1 - crlf;
+  return crlf > lf ? '\r\n' : '\n';
+}
+
+/** The settings text for `root`, written the way the original was: same indentation, same line endings, same final newline (or lack of it). */
 function serialize(root: JsonObject, original: string | undefined): string {
   const indent = /^([ \t]+)\S/m.exec(original ?? '')?.[1] ?? '  ';
+  const eol = lineEndingOf(original);
   const finalNewline = original === undefined || original.trim() === '' || original.endsWith('\n');
-  return `${JSON.stringify(root, null, indent)}${finalNewline ? '\n' : ''}`;
+  // A line break in the output is always a real one: JSON.stringify escapes the ones inside strings.
+  const text = JSON.stringify(root, null, indent).replace(/\n/g, eol);
+  return `${text}${finalNewline ? eol : ''}`;
 }
 
 /**
@@ -91,6 +173,7 @@ export function installHook(before: string | undefined, matcher: string): Settin
     const entry = { matcher, hooks: [{ type: 'command', command: HOOK_COMMAND }] };
     const sessionStart = [...(groups ?? []), entry];
     root.hooks = hooks === undefined ? { SessionStart: sessionStart } : Object.assign(hooks, { SessionStart: sessionStart });
+    assertRewritable(before, entry, INSTALL_BY_HAND);
     return { changed: true, text: serialize(root, before), entry, replaced: [] };
   }
 
@@ -105,6 +188,7 @@ export function installHook(before: string | undefined, matcher: string): Settin
 
   first.command = HOOK_COMMAND;
   (hooks as JsonObject).SessionStart = kept;
+  assertRewritable(before, entry, INSTALL_BY_HAND);
   return { changed: true, text: serialize(root, before), entry, replaced };
 }
 
@@ -127,6 +211,7 @@ export function uninstallHook(before: string | undefined): SettingsEdit {
   if (kept.length > 0) hooks.SessionStart = kept;
   else delete hooks.SessionStart;
   if (Object.keys(hooks).length === 0) delete root.hooks;
+  assertRewritable(before, removed, UNINSTALL_BY_HAND);
   return { changed: true, text: serialize(root, before), entry: removed };
 }
 
@@ -145,7 +230,8 @@ export function hasInstalledHook(text: string | undefined): boolean {
 function splitLines(text: string): string[] {
   const lines = text.split('\n');
   if (lines[lines.length - 1] === '') lines.pop();
-  return lines;
+  // A CRLF file's lines end in `\r`: the diff shows lines, not their ending.
+  return lines.map((line) => line.replace(/\r$/, ''));
 }
 
 const DIFF_CONTEXT_LINES = 3;

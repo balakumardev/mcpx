@@ -8,6 +8,8 @@ import { parse } from 'yaml';
 import { createConfigCommand } from './config.js';
 import { addServer } from '../config.js';
 import { discoverForEntry } from '../discover.js';
+import { loadDirectoryServers } from '../directory.js';
+import { buildGuideDirectory } from '../guide-directory.js';
 import { buildMetaSkillContent } from '../meta-skill.js';
 import { OAuthRequiredError } from '../oauth-required-error.js';
 import { generatedSkill, treeOf, writeGeneratedSkill, writeUserSkill } from '../skill-fixtures.js';
@@ -84,10 +86,153 @@ describe('mcpkit config', () => {
 
       expect(stdout()).toContain(settingsFile());
       for (const agent of ['claude-code', 'cursor', 'codex', 'windsurf', 'augment', 'openclaw', 'hermes']) {
-        expect(stdout()).toMatch(new RegExp(`${agent}\\s+per-server\\s+default`));
+        expect(stdout()).toMatch(new RegExp(`${agent}\\s+guide\\s+built-in default`));
       }
       expect(exitSpy).not.toHaveBeenCalled();
       expect(existsSync(join(home, '.mcpkit'))).toBe(false);
+    });
+
+    describe('what the start-up move did (state.json)', () => {
+      const stateFile = () => join(home, '.mcpkit', 'state.json');
+      const writeState = async (adopted: Record<string, unknown>) => {
+        await mkdir(join(home, '.mcpkit'), { recursive: true });
+        await writeFile(stateFile(), JSON.stringify({ version: 1, adopted, hookDeclined: false }), 'utf-8');
+      };
+      const lines = () => out.join('\n').split('\n');
+      const agentLine = (agent: string) => lines().findIndex((line) => new RegExp(`^  ${agent}\\s+guide`).test(line));
+
+      it('shows nothing extra for an agent that was not moved, and for a home without a state file', async () => {
+        await run();
+        expect(stdout()).not.toContain('adopted');
+        expect(stdout()).not.toContain('kept until indexed');
+        expect(existsSync(join(home, '.mcpkit'))).toBe(false);
+
+        await writeState({ cursor: { at: '2026-11-20T10:00:00.000Z', by: '0.1.33', removed: 2, backup: '/b/20261120100000', deferred: [] } });
+        out = [];
+        await run();
+        // Only cursor has the line: the lines of the other agents are what they were.
+        expect(lines().filter((line) => line.includes('adopted'))).toHaveLength(1);
+        expect(lines()[agentLine('claude-code') + 1]).toMatch(/^ {2}codex|^ {2}cursor/);
+      });
+
+      it('shows the date, the skills moved, where they went and the skills kept (those still on disk), under the line of each agent that was moved', async () => {
+        const backup = join(home, '.mcpkit', 'skill-backups', '20261120100000');
+        await writeState({
+          'claude-code': { at: '2026-11-20T10:00:00.000Z', by: '0.1.33', removed: 2, backup, deferred: ['c', 'd', 'e'] },
+          cursor: { at: '2026-11-21T08:30:00.000Z', by: '0.1.33', removed: 1, backup, deferred: [] },
+        });
+        for (const name of ['c', 'd', 'e']) await writeGeneratedSkill('claude-code', name);
+
+        await run();
+
+        const all = lines();
+        const claude = agentLine('claude-code');
+        expect(all[claude + 1].trim()).toBe(`adopted 2026-11-20: 2 skills moved to ${backup}; 3 kept until indexed`);
+        expect(all[agentLine('cursor') + 1].trim()).toBe(`adopted 2026-11-21: 1 skill moved to ${backup}`);
+        expect(all.filter((line) => line.includes('adopted'))).toHaveLength(2);
+        expect(exitSpy).not.toHaveBeenCalled();
+      });
+
+      it('shows it for `config skills` too, and writes nothing', async () => {
+        await writeState({ codex: { at: '2026-11-20T10:00:00.000Z', by: '0.1.33', removed: 3, backup: '/b', deferred: ['x'] } });
+        await writeGeneratedSkill('codex', 'x');
+        const before = await treeOf(home);
+
+        await run('skills');
+
+        expect(stdout()).toContain('adopted 2026-11-20: 3 skills moved to /b; 1 kept until indexed');
+        expect(await treeOf(home)).toEqual(before);
+      });
+
+      it('does not say "to null" when nothing was backed up, and reads a record from before the list of kept skills as none kept', async () => {
+        await writeState({ cursor: { at: '2026-11-20T10:00:00.000Z', by: '0.1.30', removed: 0, backup: null } });
+
+        await run();
+
+        expect(lines()[agentLine('cursor') + 1].trim()).toBe('adopted 2026-11-20: 0 skills moved');
+        expect(stdout()).not.toContain('null');
+      });
+
+      it('ignores a record that is not for an agent, and survives a state file it cannot read', async () => {
+        await mkdir(join(home, '.mcpkit'), { recursive: true });
+        await writeFile(stateFile(), '{"version":1,"adopted":{"constructor":{"at":"2026-11-20T10:00:00.000Z","by":"x","removed":9,"backup":null}},"hookDeclined":false}', 'utf-8');
+
+        await run();
+
+        expect(stdout()).not.toContain('adopted');
+        expect(stdout()).not.toContain('9 skills');
+
+        out = [];
+        await writeFile(stateFile(), '{ not json', 'utf-8');
+        await run();
+
+        expect(stdout()).not.toContain('adopted');
+        expect(stdout()).toMatch(/claude-code\s+guide\s+built-in default/);
+        expect(exitSpy).not.toHaveBeenCalled();
+        expect(await readFile(stateFile(), 'utf-8')).toBe('{ not json');
+      });
+
+      it('keeps the text of a hand-edited record to one safe line', async () => {
+        await writeState({ cursor: { at: 'yesterday\u001b[31m\nforged line', by: '0.1.33', removed: 1, backup: '/b\nforged', deferred: [] } });
+
+        await run();
+
+        // The line break of the record did not start a line of its own: both texts are in the one line.
+        expect(lines().filter((line) => line.includes('forged'))).toHaveLength(1);
+        expect(lines().find((line) => line.includes('forged'))?.trim()).toBe('adopted yesterday forged line: 1 skill moved to /b forged');
+        expect(stdout()).not.toContain('\u001b[31m');
+      });
+
+      it('counts only the kept skills that are still on disk as skills mcpkit generated, and leaves the clause out when there are none', async () => {
+        const backup = join(home, '.mcpkit', 'skill-backups', '20261120100000');
+        await writeState({ 'claude-code': { at: '2026-11-20T10:00:00.000Z', by: '0.1.33', removed: 2, backup, deferred: ['c', 'd', 'e', 'f'] } });
+        // c is there; d was rewritten by the user (no longer ours); e is gone; f is a directory of a hand-written skill that only looks like ours.
+        await writeGeneratedSkill('claude-code', 'c');
+        await writeUserSkill('claude-code', 'mcpkit-d');
+        await writeUserSkill('claude-code', 'mcpkit-f');
+
+        await run();
+
+        expect(lines()[agentLine('claude-code') + 1].trim()).toBe(`adopted 2026-11-20: 2 skills moved to ${backup}; 1 kept until indexed`);
+
+        await rm((await generatedSkill('claude-code', 'c')).dir, { recursive: true });
+        out = [];
+        await run();
+
+        expect(lines()[agentLine('claude-code') + 1].trim()).toBe(`adopted 2026-11-20: 2 skills moved to ${backup}`);
+        expect(stdout()).not.toContain('kept until indexed');
+      });
+
+      it('stops saying "kept until indexed" once `config lean on` has removed those skills', async () => {
+        await writeState({ 'claude-code': { at: '2026-11-20T10:00:00.000Z', by: '0.1.33', removed: 0, backup: null, deferred: ['c', 'd'] } });
+        await writeGeneratedSkill('claude-code', 'c');
+        await writeGeneratedSkill('claude-code', 'd');
+        await run();
+        expect(lines()[agentLine('claude-code') + 1].trim()).toBe('adopted 2026-11-20: 0 skills moved; 2 kept until indexed');
+
+        out = [];
+        await run('lean', 'on', '--agent', 'claude-code');
+        expect(exitSpy).not.toHaveBeenCalled();
+        out = [];
+        await run();
+
+        expect(lines()[agentLine('claude-code') + 1].trim()).toBe('adopted 2026-11-20: 0 skills moved');
+        expect(stdout()).not.toContain('kept until indexed');
+      });
+
+      it.skipIf(process.getuid?.() === 0)('says nothing of the kept skills when the skills directory cannot be read (it cannot say they are there)', async () => {
+        await writeState({ 'claude-code': { at: '2026-11-20T10:00:00.000Z', by: '0.1.33', removed: 0, backup: null, deferred: ['c'] } });
+        const skills = (await writeGeneratedSkill('claude-code', 'c')).dir.replace(/\/mcpkit-c$/, '');
+        await chmod(skills, 0o000);
+        try {
+          await run();
+
+          expect(lines()[agentLine('claude-code') + 1].trim()).toBe('adopted 2026-11-20: 0 skills moved');
+          expect(exitSpy).not.toHaveBeenCalled();
+        } finally {
+          await chmod(skills, 0o755);
+        }
+      });
     });
 
     it('says which value came from the file and which from the environment', async () => {
@@ -112,7 +257,7 @@ describe('mcpkit config', () => {
       await run('skills');
 
       expect(stderr()).toContain('not valid YAML');
-      expect(stdout()).toMatch(/claude-code\s+per-server\s+default/);
+      expect(stdout()).toMatch(/claude-code\s+guide\s+built-in default/);
       expect(exitSpy).not.toHaveBeenCalled();
     });
 
@@ -135,7 +280,7 @@ describe('mcpkit config', () => {
       await run();
 
       expect(exitSpy).not.toHaveBeenCalled();
-      expect(stdout()).toMatch(/claude-code\s+per-server\s+default/);
+      expect(stdout()).toMatch(/claude-code\s+guide\s+built-in default/);
       expect(existsSync(join(home, 'no'))).toBe(false);
     });
 
@@ -198,7 +343,11 @@ describe('mcpkit config', () => {
       await run('skills', 'guide', '--agent', 'claude-code');
 
       expect(exitSpy).not.toHaveBeenCalled();
-      expect(await readFile(join(skillsDir(), 'mcpkit-cli', 'SKILL.md'), 'utf-8')).toBe(buildMetaSkillContent());
+      // The guide lists the servers that serve claude-code: github and slack-me, not what only cursor has.
+      const guide = await readFile(join(skillsDir(), 'mcpkit-cli', 'SKILL.md'), 'utf-8');
+      expect(guide).toBe(buildMetaSkillContent({ directory: buildGuideDirectory(await loadDirectoryServers('claude-code')) }));
+      expect(guide).toContain('- github');
+      expect(guide).toContain('- slack-me');
       expect(existsSync(github.dir)).toBe(false);
       expect(existsSync(slack.dir)).toBe(false);
       expect(await readFile(notes.path, 'utf-8')).toBe(notes.content);
@@ -531,6 +680,154 @@ describe('mcpkit config', () => {
     it('names the missing hook on a dry run too', async () => {
       await run('skills', 'guide', '--agent', 'claude-code', '--dry-run');
       expect(stderr()).toContain('mcpkit hook install --write');
+    });
+  });
+
+  describe('lean', () => {
+    async function layout() {
+      await addServer(entry('github', ['claude-code', 'cursor']));
+      await addServer(entry('slack-me', ['claude-code']));
+      const github = await writeGeneratedSkill('claude-code', 'github');
+      const slack = await writeGeneratedSkill('claude-code', 'slack-me');
+      const cursorGithub = await writeGeneratedSkill('cursor', 'github');
+      return { github, slack, cursorGithub };
+    }
+
+    it('is described as the lean mode: only the guide, no per-server skills', () => {
+      const lean = createConfigCommand().commands.find((command) => command.name() === 'lean');
+
+      expect(lean).toBeDefined();
+      expect(lean?.description()).toContain('lean = only the mcpkit-cli guide, no per-server skills');
+      expect(lean?.helpInformation()).toContain('--agent <agent>');
+      expect(lean?.helpInformation()).toContain('--dry-run');
+      expect(createConfigCommand().helpInformation()).toContain('lean');
+    });
+
+    it('on is `skills guide`: the same effects for one agent, and the guide lists the servers', async () => {
+      const { github, slack, cursorGithub } = await layout();
+
+      await run('lean', 'on', '--agent', 'claude-code');
+
+      expect(exitSpy).not.toHaveBeenCalled();
+      expect(existsSync(github.dir)).toBe(false);
+      expect(existsSync(slack.dir)).toBe(false);
+      expect(await readFile(cursorGithub.path, 'utf-8')).toBe(cursorGithub.content);
+      expect(parse(await readFile(settingsFile(), 'utf-8'))).toEqual({ version: 1, skills: { agents: { 'claude-code': 'guide' } } });
+      const guide = await readFile(join(skillsDir(), 'mcpkit-cli', 'SKILL.md'), 'utf-8');
+      expect(guide).toContain('- github');
+      expect(guide).toContain('- slack-me');
+      expect(stdout()).toContain('Skills mode: claude-code -> guide');
+    });
+
+    it('on without --agent sets the default and migrates the agents in use, like `skills guide`', async () => {
+      const { github, slack, cursorGithub } = await layout();
+
+      await run('lean', 'on');
+
+      expect(exitSpy).not.toHaveBeenCalled();
+      expect(parse(await readFile(settingsFile(), 'utf-8'))).toEqual({ version: 1, skills: { default: 'guide' } });
+      for (const skill of [github, slack, cursorGithub]) expect(existsSync(skill.dir)).toBe(false);
+      expect(existsSync(join(skillsDir('.cursor'), 'mcpkit-cli', 'SKILL.md'))).toBe(true);
+    });
+
+    it('on, for an agent that was on per-server, still writes a guide that lists the servers: the guide is written before the mode is saved', async () => {
+      await addServer(entry('github', ['claude-code']));
+      await mkdir(join(home, '.mcpkit'), { recursive: true });
+      await writeFile(settingsFile(), 'version: 1\nskills:\n  agents:\n    claude-code: per-server\n', 'utf-8');
+
+      await run('lean', 'on', '--agent', 'claude-code');
+
+      expect(parse(await readFile(settingsFile(), 'utf-8'))).toEqual({ version: 1, skills: { agents: { 'claude-code': 'guide' } } });
+      const guide = await readFile(join(skillsDir(), 'mcpkit-cli', 'SKILL.md'), 'utf-8');
+      expect(guide).toContain('- github');
+      expect(guide).toBe(buildMetaSkillContent({ directory: buildGuideDirectory(await loadDirectoryServers('claude-code')) }));
+    });
+
+    it('on --dry-run prints exactly what `skills guide --dry-run` prints, and writes nothing', async () => {
+      await layout();
+      const before = await treeOf(home);
+
+      await run('skills', 'guide', '--agent', 'claude-code', '--dry-run');
+      const viaSkills = [...out];
+      const warningsViaSkills = [...warnings];
+      out = [];
+      warnings = [];
+      await run('lean', 'on', '--agent', 'claude-code', '--dry-run');
+
+      expect(out).toEqual(viaSkills);
+      expect(warnings).toEqual(warningsViaSkills);
+      expect(stdout()).toContain('[dry-run] Nothing is written.');
+      expect(await treeOf(home)).toEqual(before);
+      expect(existsSync(settingsFile())).toBe(false);
+    });
+
+    it('off is `skills per-server`: it saves the setting and regenerates the skills of that agent', async () => {
+      await addServer(entry('github', ['claude-code', 'cursor']));
+      await run('lean', 'on', '--agent', 'claude-code');
+      expect(existsSync(join(skillsDir(), 'mcpkit-github'))).toBe(false);
+
+      await run('lean', 'off', '--agent', 'claude-code');
+
+      expect(exitSpy).not.toHaveBeenCalled();
+      expect(parse(await readFile(settingsFile(), 'utf-8'))).toEqual({ version: 1, skills: { agents: { 'claude-code': 'per-server' } } });
+      expect(await readFile((await generatedSkill('claude-code', 'github')).path, 'utf-8')).toContain('name: mcpkit-github');
+      // The guide is the generic one again.
+      expect(await readFile(join(skillsDir(), 'mcpkit-cli', 'SKILL.md'), 'utf-8')).toBe(buildMetaSkillContent());
+    });
+
+    it('off --dry-run prints exactly what `skills per-server --dry-run` prints, and writes nothing', async () => {
+      await addServer(entry('github'));
+      await mkdir(join(home, '.mcpkit'), { recursive: true });
+      await writeFile(settingsFile(), 'version: 1\nskills:\n  agents:\n    claude-code: guide\n', 'utf-8');
+      const before = await treeOf(home);
+
+      await run('skills', 'per-server', '--agent', 'claude-code', '--dry-run');
+      const viaSkills = [...out];
+      out = [];
+      await run('lean', 'off', '--agent', 'claude-code', '--dry-run');
+
+      expect(out).toEqual(viaSkills);
+      expect(out.join('\n')).toContain('github');
+      expect(await treeOf(home)).toEqual(before);
+      expect(vi.mocked(discoverForEntry)).not.toHaveBeenCalled();
+    });
+
+    it('warns about a missing hook and about MCPKIT_SKILLS exactly as `skills guide` does', async () => {
+      await layout();
+      await run('lean', 'on', '--agent', 'claude-code');
+      expect(stderr()).toContain('mcpkit hook install --write');
+
+      warnings = [];
+      process.env.MCPKIT_SKILLS = 'per-server';
+      await run('lean', 'on', '--agent', 'claude-code');
+      expect(stderr()).toContain('MCPKIT_SKILLS=per-server overrides the file');
+    });
+
+    it('refuses a state that is not on or off, with exit code 2 and nothing written', async () => {
+      await run('lean', 'maybe');
+
+      expect(exitSpy).toHaveBeenCalledWith(2);
+      expect(stderr()).toContain('use on or off');
+      expect(existsSync(join(home, '.mcpkit'))).toBe(false);
+    });
+
+    it('refuses an unknown agent like `skills` does, and a missing state is a usage error', async () => {
+      await run('lean', 'on', '--agent', 'nonesuch');
+      expect(exitSpy).toHaveBeenCalledWith(2);
+      expect(stderr()).toContain('Unknown agent "nonesuch"');
+      expect(existsSync(settingsFile())).toBe(false);
+    });
+
+    it('is shown by `mcpkit config` as an explicit setting once it was used, and the built-in default before', async () => {
+      await run();
+      expect(stdout()).toMatch(/claude-code\s+guide\s+built-in default/);
+
+      out = [];
+      await run('lean', 'on', '--agent', 'claude-code');
+      out = [];
+      await run('skills');
+      expect(stdout()).toMatch(/claude-code\s+guide\s+file \(agents\.claude-code\)/);
+      expect(stdout()).toMatch(/cursor\s+guide\s+built-in default/);
     });
   });
 });

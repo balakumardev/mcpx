@@ -1,44 +1,19 @@
-import { Command } from 'commander';
-import { createInstallCommand } from './commands/install.js';
-import { createCallCommand } from './commands/call.js';
-import { createListCommand } from './commands/list.js';
-import { createRemoveCommand } from './commands/remove.js';
-import { createUpdateCommand } from './commands/update.js';
-import { createSyncCommand } from './commands/sync.js';
-import { createViewCommand } from './commands/view.js';
-import { createEditCommand } from './commands/edit.js';
-import { createAuthCommand } from './commands/auth.js';
-import { createAgentsCommand } from './commands/agents.js';
-import { createRuntimeCommand } from './commands/runtime.js';
-import { createSearchCommand } from './commands/search.js';
-import { createDescribeCommand } from './commands/describe.js';
-import { createTypesCommand } from './commands/gen-types.js';
-import { createExecCommand, createSandboxWorkerCommand } from './commands/exec.js';
-import { createHookCommand } from './commands/hook.js';
-import { createConfigCommand } from './commands/config.js';
+import { createProgram } from './program.js';
+import { reconcileBeforeAction } from './reconcile.js';
 
-const program = new Command()
-  .name('mcpkit')
-  .description('Turn any MCP server into CLI commands + lightweight agent skills')
-  .version(__PKG_VERSION__);
+const program = createProgram(__PKG_VERSION__);
 
-program.addCommand(createInstallCommand());
-program.addCommand(createCallCommand());
-program.addCommand(createListCommand());
-program.addCommand(createRemoveCommand());
-program.addCommand(createUpdateCommand());
-program.addCommand(createSyncCommand());
-program.addCommand(createViewCommand());
-program.addCommand(createEditCommand());
-program.addCommand(createAuthCommand());
-program.addCommand(createAgentsCommand());
-program.addCommand(createRuntimeCommand());
-program.addCommand(createSearchCommand());
-program.addCommand(createDescribeCommand());
-program.addCommand(createTypesCommand());
-program.addCommand(createExecCommand());
-program.addCommand(createHookCommand());
-program.addCommand(createConfigCommand());
-program.addCommand(createSandboxWorkerCommand(), { hidden: true });
+// In front of every command that is about to run (nested ones included): bring the skills and the guide
+// in line with the default lean mode. It decides from the command's class (see `classifyCommand`), never
+// throws, and prints only on stderr, so the command's own output and exit code are what they were.
+program.hook('preAction', async (_program, actionCommand) => {
+  await reconcileBeforeAction(actionCommand);
+});
 
-program.parse();
+// Not `await program.parseAsync(...)`: a top-level await on a promise that never settles (`call --keepalive`
+// once its server has died: nothing is left that could settle it) makes Node end the process with status 13,
+// "unsettled top-level await", where the event loop alone ended it with 0 before. `parse` starts the same
+// chain, in which commander awaits the async preAction hook above before it runs the action, and leaves the
+// ending of the process to the event loop. An action that rejects is an unhandled rejection, as it always was:
+// the error and its stack on stderr, exit status 1.
+program.parse(process.argv);

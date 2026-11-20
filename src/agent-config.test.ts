@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   createAgentSettings,
+  entryServesAgent,
   getAgentSettingsPath,
   loadAgentSettings,
   parseAgentSelectionInput,
@@ -11,7 +12,8 @@ import {
   resolveServerAgents,
   saveAgentSettings,
 } from './agent-config.js';
-import type { ServerEntry } from './types.js';
+import { ALL_AGENTS } from './types.js';
+import type { AgentType, ServerEntry } from './types.js';
 
 describe('agent-config', () => {
   const originalHome = process.env.HOME;
@@ -176,6 +178,53 @@ describe('agent-config', () => {
       agents: ['cursor'],
       selectionMode: 'explicit',
       source: 'explicit',
+    });
+  });
+
+  describe('entryServesAgent: the agents that a server is installed for are the agents that resolveServerAgents writes its skill for', () => {
+    const server = (extra: Partial<ServerEntry>): ServerEntry => ({
+      name: 'github',
+      transport: { type: 'stdio', command: 'npx', args: [] },
+      toolCount: 1,
+      agents: ['claude-code'],
+      createdAt: '2026-03-24T00:00:00.000Z',
+      updatedAt: '2026-03-24T00:00:00.000Z',
+      ...extra,
+    });
+    const served = (entry: ServerEntry, settings: ReturnType<typeof createAgentSettings> | null): AgentType[] => ALL_AGENTS.filter((agent) => entryServesAgent(entry, settings, agent));
+
+    it('agrees with resolveServerAgents for every agent, in every mode and settings case', () => {
+      const settingsCases = [null, createAgentSettings(['claude-code', 'cursor'], '2026-03-24T00:00:00.000Z')];
+      const entries = [
+        server({ agentSelectionMode: 'defaults' }),
+        server({}),
+        server({ agentSelectionMode: 'defaults', agents: [] }),
+        server({ agentSelectionMode: 'explicit', agents: ['codex', 'hermes'] }),
+        server({ agentSelectionMode: 'explicit', agents: [] }),
+      ];
+      for (const settings of settingsCases) {
+        for (const entry of entries) {
+          expect(served(entry, settings)).toEqual(ALL_AGENTS.filter((agent) => resolveServerAgents(entry, settings).agents.includes(agent)));
+        }
+      }
+    });
+
+    it('follows the saved defaults for a server in defaults mode, whatever its stored list says; an explicit list is respected', () => {
+      const settings = createAgentSettings(['claude-code', 'cursor'], '2026-03-24T00:00:00.000Z');
+      expect(served(server({ agentSelectionMode: 'defaults', agents: ['claude-code'] }), settings)).toEqual(['claude-code', 'cursor']);
+      expect(served(server({ agents: ['codex'] }), settings)).toEqual(['claude-code', 'cursor']);
+      expect(served(server({ agentSelectionMode: 'explicit', agents: ['claude-code'] }), settings)).toEqual(['claude-code']);
+    });
+
+    it('has no "an empty list serves every agent": an empty list is Claude Code, a stored list is used without saved defaults', () => {
+      expect(served(server({ agents: [] }), null)).toEqual(['claude-code']);
+      expect(served(server({ agentSelectionMode: 'explicit', agents: [] }), null)).toEqual(['claude-code']);
+      expect(served(server({ agents: ['codex', 'cursor'] }), null)).toEqual(['cursor', 'codex']);
+    });
+
+    it('counts a missing list as an empty one and serves no agent for a list that names an unknown one', () => {
+      expect(served(server({ agents: undefined as unknown as AgentType[] }), null)).toEqual(['claude-code']);
+      expect(served(server({ agents: ['claude-code', 'not-an-agent' as AgentType] }), null)).toEqual([]);
     });
   });
 

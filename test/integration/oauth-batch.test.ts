@@ -57,6 +57,8 @@ function cli(args: string[], extraEnv: NodeJS.ProcessEnv = {}): Promise<CliResul
         PATH: `${stubBin}:${process.env.PATH ?? ''}`,
         BROWSER: '/usr/bin/false',
         OPENER_LOG: openerLog,
+        // These cases watch `sync` and `update` discover each server and write its per-server skill, which the default (the guide) does not do.
+        MCPKIT_SKILLS: 'per-server',
         ...extraEnv,
       },
       stdio: ['ignore', 'pipe', 'pipe'],

@@ -21,6 +21,10 @@ delete process.env.HERMES_HOME;
 // Not a path, but it decides whether skills are written per server or as one guide, for every agent
 // and over the settings file, so a shell that exports it must not change a result.
 delete process.env.MCPKIT_SKILLS;
+// The start-up reconcile moves skills and the hook of whatever home it finds. A test that is not about it
+// must not have a command it runs change the files it is looking at (or print its notice into the log), so
+// it is off here; the tests of the reconcile itself turn it on (src/reconcile.test.ts, test/integration/reconcile.test.ts).
+process.env.MCPKIT_NO_MIGRATE = '1';
 
 if (homedir() !== home) {
   throw new Error(`test isolation failed: os.homedir() is ${homedir()}, expected ${home}`);

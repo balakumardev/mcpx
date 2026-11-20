@@ -4,13 +4,17 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parse } from 'yaml';
 import {
+  DEFAULT_SKILL_MODE,
   getSettingsPath,
+  isExplicitSource,
   loadSettings,
   perServerAgents,
   resolveSkillMode,
+  resolveSkillModeSource,
   saveSkillMode,
   skillModeFor,
 } from './settings.js';
+import type { LoadedSettings } from './settings.js';
 import { ALL_AGENTS } from './types.js';
 
 describe('skill settings', () => {
@@ -44,19 +48,20 @@ describe('skill settings', () => {
   });
 
   describe('defaults', () => {
-    it('are per-server for every agent when there is no file', async () => {
-      for (const agent of ALL_AGENTS) expect(await skillModeFor(agent)).toBe('per-server');
+    it('is the guide (lean) for every agent when there is no file', async () => {
+      expect(DEFAULT_SKILL_MODE).toBe('guide');
+      for (const agent of ALL_AGENTS) expect(await skillModeFor(agent)).toBe('guide');
       const loaded = await loadSettings();
       expect(loaded.problems).toEqual([]);
       expect(loaded.unusable).toBe(false);
-      expect(resolveSkillMode(loaded, 'claude-code')).toEqual({ mode: 'per-server', source: 'default' });
+      expect(resolveSkillMode(loaded, 'claude-code')).toEqual({ mode: 'guide', source: 'default' });
     });
 
-    it('are per-server for an empty file and for one without a skills section', async () => {
+    it('is the guide for an empty file and for one without a skills section', async () => {
       await writeSettings('');
-      expect(await skillModeFor('claude-code')).toBe('per-server');
+      expect(await skillModeFor('claude-code')).toBe('guide');
       await writeSettings('version: 1\n');
-      expect(await skillModeFor('claude-code')).toBe('per-server');
+      expect(await skillModeFor('claude-code')).toBe('guide');
       expect((await loadSettings()).problems).toEqual([]);
     });
 
@@ -68,7 +73,7 @@ describe('skill settings', () => {
   });
 
   describe('precedence', () => {
-    it('is env, then the agent entry, then the default, then per-server', async () => {
+    it('is env, then the agent entry, then the default, then the built-in guide', async () => {
       await writeSettings('version: 1\nskills:\n  default: guide\n  agents:\n    claude-code: per-server\n');
       expect(await skillModeFor('claude-code')).toBe('per-server');
       expect(await skillModeFor('cursor')).toBe('guide');
@@ -108,7 +113,7 @@ describe('skill settings', () => {
       ['a version of a newer mcpkit', 'version: 2\nskills:\n  default: guide\n'],
     ])('falls back to the defaults for %s, never throws, and reports it', async (_label, text) => {
       await writeSettings(text);
-      expect(await skillModeFor('claude-code')).toBe('per-server');
+      expect(await skillModeFor('claude-code')).toBe('guide');
       const loaded = await loadSettings();
       expect(loaded.unusable).toBe(true);
       expect(loaded.problems.length).toBeGreaterThan(0);
@@ -117,7 +122,7 @@ describe('skill settings', () => {
 
     it('falls back to the defaults for a file that cannot be read', async () => {
       await mkdir(settingsFile(), { recursive: true });
-      expect(await skillModeFor('claude-code')).toBe('per-server');
+      expect(await skillModeFor('claude-code')).toBe('guide');
       const loaded = await loadSettings();
       expect(loaded.unusable).toBe(true);
       expect(loaded.problems[0]).toContain('cannot read');
@@ -135,8 +140,8 @@ describe('skill settings', () => {
         '',
       ].join('\n'));
       expect(await skillModeFor('claude-code')).toBe('guide');
-      expect(await skillModeFor('cursor')).toBe('per-server');
-      expect(await skillModeFor('codex')).toBe('per-server');
+      expect(await skillModeFor('cursor')).toBe('guide');
+      expect(await skillModeFor('codex')).toBe('guide');
       const loaded = await loadSettings();
       expect(loaded.unusable).toBe(false);
       expect(loaded.problems).toHaveLength(3);
@@ -147,7 +152,7 @@ describe('skill settings', () => {
 
     it('does not break on a skills section of the wrong type', async () => {
       await writeSettings('version: 1\nskills: guide\n');
-      expect(await skillModeFor('claude-code')).toBe('per-server');
+      expect(await skillModeFor('claude-code')).toBe('guide');
       expect((await loadSettings()).problems).toHaveLength(1);
     });
 
@@ -162,13 +167,13 @@ describe('skill settings', () => {
   describe('missing or read-only home', () => {
     it('reads defaults when the home directory does not exist', async () => {
       process.env.HOME = join(home, 'no', 'such', 'dir');
-      expect(await skillModeFor('claude-code')).toBe('per-server');
+      expect(await skillModeFor('claude-code')).toBe('guide');
       expect((await loadSettings()).problems).toEqual([]);
     });
 
     it.skipIf(process.getuid?.() === 0)('reads defaults, and a save fails with an error, when the home is read-only', async () => {
       await chmod(home, 0o555);
-      expect(await skillModeFor('claude-code')).toBe('per-server');
+      expect(await skillModeFor('claude-code')).toBe('guide');
       await expect(saveSkillMode('guide', 'claude-code')).rejects.toThrow();
       await chmod(home, 0o755);
       expect(await readdir(home)).toEqual([]);
@@ -183,7 +188,7 @@ describe('skill settings', () => {
       expect((await stat(settingsFile())).mode & 0o777).toBe(0o600);
       expect(await readdir(join(home, '.mcpkit'))).toEqual(['config.yaml']);
       expect(await skillModeFor('claude-code')).toBe('guide');
-      expect(await skillModeFor('cursor')).toBe('per-server');
+      expect(await skillModeFor('cursor')).toBe('guide');
     });
 
     it('sets the default when no agent is given, and keeps the entries of other agents', async () => {
@@ -242,11 +247,18 @@ describe('skill settings', () => {
   });
 
   describe('perServerAgents', () => {
-    it('keeps every agent while no setting exists', async () => {
-      expect(await perServerAgents(['claude-code', 'cursor'])).toEqual(['claude-code', 'cursor']);
+    it('keeps no agent while no setting exists: the built-in default is the guide', async () => {
+      expect(await perServerAgents(['claude-code', 'cursor'])).toEqual([]);
+    });
+
+    it('keeps the agents that are set to per-server, in order', async () => {
+      await saveSkillMode('per-server', 'cursor');
+      await saveSkillMode('per-server', 'claude-code');
+      expect(await perServerAgents(['cursor', 'claude-code', 'codex'])).toEqual(['cursor', 'claude-code']);
     });
 
     it('drops the agents in guide mode, in order, for the global scope', async () => {
+      await saveSkillMode('per-server');
       await saveSkillMode('guide', 'claude-code');
       expect(await perServerAgents(['cursor', 'claude-code', 'codex'])).toEqual(['cursor', 'codex']);
       expect(await perServerAgents(['claude-code'])).toEqual([]);
@@ -257,6 +269,58 @@ describe('skill settings', () => {
       process.env.MCPKIT_SKILLS = 'guide';
       expect(await perServerAgents(['claude-code', 'cursor'], 'project')).toEqual(['claude-code', 'cursor']);
       expect(await perServerAgents(['claude-code', 'cursor'], 'global')).toEqual([]);
+    });
+  });
+
+  describe('resolveSkillModeSource', () => {
+    const settingsWith = (skills: LoadedSettings['skills']): LoadedSettings => ({ path: '', skills, problems: [], unusable: false, extra: {} });
+    const empty = settingsWith({ agents: {} });
+
+    it('says builtin when nothing is configured, and the mode is the built-in default', () => {
+      for (const agent of ALL_AGENTS) {
+        expect(resolveSkillModeSource(empty, agent, {})).toEqual({ mode: DEFAULT_SKILL_MODE, source: 'builtin' });
+      }
+    });
+
+    it('says default for skills.default, agent for the agent entry and env for MCPKIT_SKILLS', () => {
+      const settings = settingsWith({ default: 'per-server', agents: { cursor: 'guide' } });
+      expect(resolveSkillModeSource(settings, 'codex', {})).toEqual({ mode: 'per-server', source: 'default' });
+      expect(resolveSkillModeSource(settings, 'cursor', {})).toEqual({ mode: 'guide', source: 'agent' });
+      expect(resolveSkillModeSource(settings, 'cursor', { MCPKIT_SKILLS: 'per-server' })).toEqual({ mode: 'per-server', source: 'env' });
+      expect(resolveSkillModeSource(settings, 'codex', { MCPKIT_SKILLS: ' GUIDE ' })).toEqual({ mode: 'guide', source: 'env' });
+    });
+
+    it('takes the environment before the agent entry, the agent entry before the default, the default before the built-in', () => {
+      const both = settingsWith({ default: 'per-server', agents: { cursor: 'guide' } });
+      expect(resolveSkillModeSource(both, 'cursor', { MCPKIT_SKILLS: 'per-server' }).source).toBe('env');
+      expect(resolveSkillModeSource(both, 'cursor', {}).source).toBe('agent');
+      expect(resolveSkillModeSource(both, 'claude-code', {}).source).toBe('default');
+      expect(resolveSkillModeSource(empty, 'claude-code', {}).source).toBe('builtin');
+    });
+
+    it('does not count an empty or unknown MCPKIT_SKILLS as a source', () => {
+      expect(resolveSkillModeSource(empty, 'codex', { MCPKIT_SKILLS: '' }).source).toBe('builtin');
+      expect(resolveSkillModeSource(empty, 'codex', { MCPKIT_SKILLS: 'everything' }).source).toBe('builtin');
+    });
+
+    it('reads process.env when no environment is given', () => {
+      process.env.MCPKIT_SKILLS = 'per-server';
+      expect(resolveSkillModeSource(empty, 'codex')).toEqual({ mode: 'per-server', source: 'env' });
+    });
+
+    it('is what resolveSkillMode reports, in its older shape: file for agent and default, default for the built-in', () => {
+      const settings = settingsWith({ default: 'per-server', agents: { cursor: 'guide' } });
+      expect(resolveSkillMode(settings, 'cursor', {})).toEqual({ mode: 'guide', source: 'file', detail: 'agents.cursor' });
+      expect(resolveSkillMode(settings, 'codex', {})).toEqual({ mode: 'per-server', source: 'file', detail: 'skills.default' });
+      expect(resolveSkillMode(settings, 'codex', { MCPKIT_SKILLS: 'guide' })).toEqual({ mode: 'guide', source: 'env', detail: 'MCPKIT_SKILLS' });
+      expect(resolveSkillMode(empty, 'codex', {})).toEqual({ mode: 'guide', source: 'default' });
+    });
+
+    it('isExplicitSource is true for env, agent and default, and false for builtin', () => {
+      expect(isExplicitSource('env')).toBe(true);
+      expect(isExplicitSource('agent')).toBe(true);
+      expect(isExplicitSource('default')).toBe(true);
+      expect(isExplicitSource('builtin')).toBe(false);
     });
   });
 });

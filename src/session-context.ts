@@ -41,18 +41,20 @@ export const WORKFLOW_LINES: readonly string[] = [
 // An ANSI escape sequence: OSC (ESC ] ... BEL or ESC \), CSI (ESC [ or U+009B, parameters, a final byte)
 // or any other two-character ESC sequence. Removed whole, so the text of a sequence does not survive.
 const ANSI_SEQUENCE = /\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|(?:\u001b\[|\u009b)[0-?]*[ -/]*[@-~]|\u001b[@-_]/g;
-// Format characters (zero-width, bidi overrides, tag characters), private use and lone surrogates are removed: they are invisible.
-const INVISIBLE = /[\p{Cf}\p{Co}\p{Cs}]/gu;
+// Format characters (zero-width, bidi overrides, tag characters), private use, lone surrogates and
+// unassigned code points (U+FFFE, U+FFFF, U+FDD0 and the other noncharacters among them) are removed: they are
+// invisible, and the last ones are not valid in a YAML document for a strict parser (PyYAML, Ruby).
+const INVISIBLE = /[\p{Cf}\p{Co}\p{Cs}\p{Cn}]/gu;
 // Every other control character, the Unicode line and paragraph separators and all white space become one space.
 const BREAKS_AND_SPACE = /[\p{Cc}\p{Zl}\p{Zp}\s]+/gu;
 
 /**
  * An identifier or a sentence from an untrusted file as one safe line: ANSI escape sequences, control
- * characters, invisible characters and line breaks are gone (so a newline cannot start a heading or
+ * characters, invisible and unassigned characters and line breaks (U+0085, U+2028 and U+2029 included) are gone (so a newline cannot start a heading or
  * a list item), and the characters that could close or open a wrapper tag or a code fence are
  * replaced with look-alikes: `<` `>` become `‹` `›` and a backtick becomes an apostrophe.
  */
-function neutralize(text: string): string {
+export function neutralize(text: string): string {
   return text
     .replace(ANSI_SEQUENCE, '')
     .replace(INVISIBLE, '')

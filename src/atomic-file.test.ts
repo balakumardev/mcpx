@@ -3,7 +3,7 @@ import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rm, stat, sy
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { withFileLock, writeFileAtomic } from './atomic-file.js';
+import { tryWithFileLock, withFileLock, writeFileAtomic } from './atomic-file.js';
 
 describe('atomic-file', () => {
   let dir = '';
@@ -206,6 +206,66 @@ describe('atomic-file', () => {
       expect(await withFileLock(lockPath, async () => 'ran', { staleMs: 300, retryMs: 20, timeoutMs: 2_000 })).toBe('ran');
 
       expect(Date.now() - started).toBeGreaterThanOrEqual(250);
+    });
+  });
+
+  describe('tryWithFileLock', () => {
+    it('runs the task, returns its value and releases the lock', async () => {
+      const lockPath = join(dir, 'x.lock');
+      expect(await tryWithFileLock(lockPath, async () => 7)).toEqual({ acquired: true, value: 7 });
+      expect(existsSync(lockPath)).toBe(false);
+    });
+
+    it('releases the lock when the task throws, and throws what the task threw', async () => {
+      const lockPath = join(dir, 'x.lock');
+      await expect(tryWithFileLock(lockPath, async () => { throw new Error('task failed'); })).rejects.toThrow('task failed');
+      expect(existsSync(lockPath)).toBe(false);
+    });
+
+    it('does not wait and does not run the task when a live process holds the lock', async () => {
+      const lockPath = join(dir, 'x.lock');
+      await mkdir(lockPath);
+      let ran = false;
+
+      const started = performance.now();
+      const result = await tryWithFileLock(lockPath, async () => { ran = true; }, { staleMs: 60_000 });
+
+      expect(result).toEqual({ acquired: false });
+      expect(ran).toBe(false);
+      expect(performance.now() - started).toBeLessThan(500);
+      expect(existsSync(lockPath)).toBe(true);
+    });
+
+    it('breaks a stale lock and runs', async () => {
+      const lockPath = join(dir, 'x.lock');
+      await mkdir(lockPath);
+      const old = new Date(Date.now() - 120_000);
+      await utimes(lockPath, old, old);
+
+      expect(await tryWithFileLock(lockPath, async () => 'ran', { staleMs: 60_000 })).toEqual({ acquired: true, value: 'ran' });
+      expect(existsSync(lockPath)).toBe(false);
+    });
+
+    it('lets exactly one of several callers in at once, and the others return not acquired', async () => {
+      const lockPath = join(dir, 'x.lock');
+      let active = 0;
+      let maxActive = 0;
+
+      const results = await Promise.all(Array.from({ length: 12 }, () => tryWithFileLock(lockPath, async () => {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        active -= 1;
+      })));
+
+      expect(maxActive).toBe(1);
+      expect(results.filter((result) => result.acquired)).toHaveLength(1);
+      expect(existsSync(lockPath)).toBe(false);
+    });
+
+    it('throws what is not "held" (a directory that cannot be created)', async () => {
+      await writeFile(join(dir, 'file'), 'x');
+      await expect(tryWithFileLock(join(dir, 'file', 'x.lock'), async () => 1)).rejects.toThrow();
     });
   });
 

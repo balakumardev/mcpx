@@ -57,6 +57,7 @@ describe('install', () => {
     } else {
       process.env.HOME = originalHome;
     }
+    vi.unstubAllEnvs();
     await rm(outer, { recursive: true, force: true });
     vi.restoreAllMocks();
     vi.clearAllMocks();
@@ -154,6 +155,8 @@ describe('install', () => {
     it.each([
       'mysql-prod', 'slack-me', 'composio-personal', 'obsidian-search', 'chrome-devtools', 'xcodebuildmcp',
     ])('installs under the real name %s', async (name) => {
+      // The skill file is a per-server skill, which the default (the guide) does not write.
+      vi.stubEnv('MCPKIT_SKILLS', 'per-server');
       await install('node ./server.js', '-n', name);
 
       expect(exitSpy).not.toHaveBeenCalled();

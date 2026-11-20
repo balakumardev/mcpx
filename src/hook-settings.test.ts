@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DEFAULT_MATCHER, HOOK_COMMAND, SettingsRefusal, backupFile, hasInstalledHook, installHook, timestamp, uninstallHook, unifiedDiff } from './hook-settings.js';
+import { DEFAULT_MATCHER, HOOK_COMMAND, SettingsRefusal, UnsafeRewrite, backupFile, hasInstalledHook, installHook, timestamp, uninstallHook, unifiedDiff } from './hook-settings.js';
 
 const ours = { type: 'command', command: HOOK_COMMAND };
 const ourGroup = { matcher: DEFAULT_MATCHER, hooks: [ours] };
@@ -234,6 +234,118 @@ describe('uninstallHook', () => {
   it('is the inverse of install for a file with other content', () => {
     const before = json({ model: 'opus', hooks: { Stop: [{ hooks: [{ type: 'command', command: 'x' }] }] } });
     expect(uninstallHook(installHook(before, DEFAULT_MATCHER).text).text).toBe(before);
+  });
+});
+
+describe('line endings: the file is written back the way it was read', () => {
+  const crlf = (text: string): string => text.replace(/\n/g, '\r\n');
+  const settings = { model: 'opus', hooks: { Stop: [{ hooks: [{ type: 'command', command: 'x' }] }] } };
+
+  it('keeps CRLF: the result is the LF result with every line ending turned into CRLF, and nothing else differs', () => {
+    const before = crlf(json(settings));
+    const edit = installHook(before, DEFAULT_MATCHER);
+
+    expect(edit.text).toBe(crlf(installHook(json(settings), DEFAULT_MATCHER).text));
+    expect(edit.text).not.toMatch(/[^\r]\n/);
+    // Byte for byte the original up to the added entry: the lines before it are the same bytes.
+    const lines = edit.text.split('\r\n');
+    const original = before.split('\r\n');
+    expect(lines.slice(0, 2)).toEqual(original.slice(0, 2));
+    expect(edit.text.endsWith('}\r\n')).toBe(true);
+    expect(JSON.parse(edit.text)).toEqual({ ...settings, hooks: { ...settings.hooks, SessionStart: [ourGroup] } });
+  });
+
+  it('is undone byte for byte by an uninstall (CRLF in, CRLF out)', () => {
+    const before = crlf(json(settings));
+    expect(uninstallHook(installHook(before, DEFAULT_MATCHER).text).text).toBe(before);
+  });
+
+  it('keeps the lack of a final newline of a CRLF file, and a tab indentation', () => {
+    const before = crlf(JSON.stringify({ a: 1 }, null, '\t'));
+    expect(installHook(before, DEFAULT_MATCHER).text).toBe(crlf(JSON.stringify({ a: 1, hooks: { SessionStart: [ourGroup] } }, null, '\t')));
+  });
+
+  it('keeps the commoner ending of a file that mixes both, and LF on a tie', () => {
+    const lines = JSON.stringify(settings, null, 2).split('\n');
+    const mostlyCrlf = `${lines.slice(0, -2).join('\r\n')}\r\n${lines.slice(-2).join('\n')}\n`;
+    expect(installHook(mostlyCrlf, DEFAULT_MATCHER).text).not.toMatch(/[^\r]\n/);
+
+    const mostlyLf = `${lines.slice(0, -2).join('\n')}\n${lines.slice(-2).join('\r\n')}\r\n`;
+    expect(installHook(mostlyLf, DEFAULT_MATCHER).text).not.toContain('\r');
+
+    const tie = '{\r\n  "a": 1\n}\n';
+    expect(installHook(tie, DEFAULT_MATCHER).text).not.toContain('\r');
+  });
+
+  it('writes LF for a new file and for a file with no line break, as before', () => {
+    expect(installHook(undefined, DEFAULT_MATCHER).text).not.toContain('\r');
+    expect(installHook('{"a":1}', DEFAULT_MATCHER).text).not.toContain('\r');
+  });
+
+  it('shows a CRLF file\'s diff as lines, with no carriage return in it, and only the added lines changed', () => {
+    const before = crlf(json(settings));
+    const diff = unifiedDiff('settings.json', before, installHook(before, DEFAULT_MATCHER).text);
+    expect(diff).not.toContain('\r');
+    expect(diff.split('\n').filter((line) => line.startsWith('-') && !line.startsWith('---'))).toEqual([]);
+    expect(diff).toContain('+    "SessionStart": [');
+  });
+});
+
+describe('numbers the rewrite would change: the file is refused, never rewritten', () => {
+  const big = '{\n  "id": 12345678901234567890,\n  "model": "opus"\n}\n';
+
+  it('refuses an integer beyond what a double holds, for install and for uninstall, naming the problem and what to do by hand', () => {
+    for (const edit of [() => installHook(big, DEFAULT_MATCHER), () => uninstallHook(big.replace('"model": "opus"', `"hooks": {"SessionStart": [${JSON.stringify(ourGroup)}]}`))]) {
+      expect(edit).toThrow(UnsafeRewrite);
+      expect(edit).toThrow(SettingsRefusal);
+      expect(edit).toThrow(/the integer 12345678901234567890, which a JSON parser cannot hold exactly/);
+      expect(edit).toThrow(/it would write 12345678901234567000/);
+      expect(edit).toThrow(/by hand/);
+    }
+    expect(() => installHook(big, DEFAULT_MATCHER)).toThrow(/mcpkit hook install` \(without --write\) prints it/);
+  });
+
+  it('carries the entry to add by hand (the new one for an install, the removed ones for an uninstall)', () => {
+    let caught: unknown;
+    try { installHook(big, DEFAULT_MATCHER); } catch (err) { caught = err; }
+    expect(caught).toBeInstanceOf(UnsafeRewrite);
+    expect((caught as UnsafeRewrite).entry).toEqual(ourGroup);
+
+    try { uninstallHook(`{"n": 18446744073709551616, "hooks": {"SessionStart": [${JSON.stringify(ourGroup)}]}}`); } catch (err) { caught = err; }
+    expect((caught as UnsafeRewrite).entry).toEqual([ours]);
+  });
+
+  it('refuses a number whose text would not come back as it is written, and a long literal in an exponent or a fraction', () => {
+    for (const literal of ['1.0', '1e3', '1E+2', '-0', '0.10', '1.5e300', '9007199254740993', '3.14159265358979323846', '1e999']) {
+      expect(() => installHook(`{"n": ${literal}}`, DEFAULT_MATCHER), literal).toThrow(UnsafeRewrite);
+      expect(() => installHook(`{"list": [1, {"deep": [${literal}]}]}`, DEFAULT_MATCHER), `${literal} deep`).toThrow(UnsafeRewrite);
+    }
+  });
+
+  it('lets every number that comes back exactly through, however long: they are not changed', () => {
+    for (const literal of ['0', '1', '-1', '-1.5', '0.1', '100', '15', '1234567890123456', '9007199254740992', '10000000000000000000', '1.7976931348623157e+308', '5e-324']) {
+      const edit = installHook(`{"n": ${literal}}`, DEFAULT_MATCHER);
+      expect(edit.changed, literal).toBe(true);
+      expect(edit.text, literal).toContain(`"n": ${literal}`);
+    }
+  });
+
+  it('does not look inside strings (escaped quotes included), nor at keys', () => {
+    const before = JSON.stringify({ '12345678901234567890': 'a "1.0" b', note: '\\"12345678901234567890\\"', v: '1e3' }, null, 2);
+    const edit = installHook(before, DEFAULT_MATCHER);
+    expect(JSON.parse(edit.text)).toMatchObject({ '12345678901234567890': 'a "1.0" b', v: '1e3' });
+  });
+
+  it('changes nothing, and so refuses nothing, when the hook is installed already (nothing is written)', () => {
+    const installed = `{"id": 12345678901234567890, "hooks": {"SessionStart": [${JSON.stringify(ourGroup)}]}}`;
+    expect(installHook(installed, DEFAULT_MATCHER)).toMatchObject({ changed: false, text: installed });
+    expect(uninstallHook(`{"id": 12345678901234567890}`)).toEqual({ changed: false, text: '{"id": 12345678901234567890}' });
+    expect(hasInstalledHook(installed)).toBe(true);
+  });
+
+  it('does not refuse a missing or empty file, nor numbers that survive', () => {
+    expect(installHook(undefined, DEFAULT_MATCHER).changed).toBe(true);
+    expect(installHook(json({ timeout: 30, ratio: 0.5, big: 9007199254740991 }), DEFAULT_MATCHER).changed).toBe(true);
   });
 });
 

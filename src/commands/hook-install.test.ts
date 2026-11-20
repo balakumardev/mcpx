@@ -140,6 +140,25 @@ describe('mcpkit hook install and uninstall', () => {
       expect(process.exitCode).toBeUndefined();
     });
 
+    it('keeps CRLF line endings: the backup is the original bytes and the file is the original with only the entry added', async () => {
+      const original = (await writeSettings({ model: 'opus', hooks: { Stop: [otherGroup] } })).replace(/\n/g, '\r\n');
+      await writeFile(settingsPath, original);
+
+      await hook('install', '--write');
+
+      const [backup] = await backups();
+      expect(await readFile(join(homeDir, '.claude', backup), 'utf-8')).toBe(original);
+      const written = await readFile(settingsPath, 'utf-8');
+      expect(written).not.toMatch(/[^\r]\n/);
+      expect(written.endsWith('}\r\n')).toBe(true);
+      expect(JSON.parse(written)).toEqual({ model: 'opus', hooks: { Stop: [otherGroup], SessionStart: [ourGroup] } });
+      expect(written.split('\r\n').slice(0, 2)).toEqual(original.split('\r\n').slice(0, 2));
+
+      // And the uninstall gives the original bytes back.
+      await hook('uninstall', '--write');
+      expect(await readFile(settingsPath, 'utf-8')).toBe(original);
+    });
+
     it('creates the file and its directories when they do not exist, with no backup and owner-only permissions', async () => {
       await hook('install', '--write');
 
@@ -288,10 +307,11 @@ describe('mcpkit hook install and uninstall', () => {
       expect(out()).toContain('not installed');
     });
 
-    it('is a no-op when the file or the hook is missing: exit 0, nothing created', async () => {
+    it('is a no-op when the file or the hook is missing: exit 0, no settings file created (the refusal is still recorded in the state file)', async () => {
       await hook('uninstall', '--write');
       expect(out()).toContain('not installed');
-      expect(await readdir(homeDir)).toEqual([]);
+      expect(await readdir(homeDir)).toEqual(['.mcpkit']);
+      expect(JSON.parse(await readFile(join(homeDir, '.mcpkit', 'state.json'), 'utf-8'))).toMatchObject({ hookDeclined: true });
       expect(process.exitCode).toBeUndefined();
     });
 
@@ -300,6 +320,159 @@ describe('mcpkit hook install and uninstall', () => {
       await hook('uninstall', '--write');
       expect(process.exitCode).toBe(1);
       expect(await readdir(join(homeDir, '.claude'))).toEqual(['settings.json']);
+    });
+  });
+
+  describe('the refusal on record (state.json hookDeclined), which the start-up reconcile respects', () => {
+    const statePath = (): string => join(homeDir, '.mcpkit', 'state.json');
+    const readState = async (): Promise<Record<string, unknown>> => JSON.parse(await readFile(statePath(), 'utf-8')) as Record<string, unknown>;
+
+    it('uninstall --write sets hookDeclined, keeping the rest of the state', async () => {
+      await writeSettings({ hooks: { SessionStart: [ourGroup] } });
+      await mkdir(join(homeDir, '.mcpkit'), { recursive: true });
+      await writeFile(statePath(), JSON.stringify({ version: 1, adopted: {}, hookDeclined: false, fingerprint: 'abc', futureKey: { kept: true } }));
+
+      await hook('uninstall', '--write');
+
+      expect(await readState()).toEqual({ version: 1, adopted: {}, hookDeclined: true, fingerprint: 'abc', futureKey: { kept: true } });
+    });
+
+    it('install --write clears it', async () => {
+      await mkdir(join(homeDir, '.mcpkit'), { recursive: true });
+      await writeFile(statePath(), JSON.stringify({ version: 1, adopted: {}, hookDeclined: true }));
+
+      await hook('install', '--write');
+
+      expect(await readState()).toMatchObject({ hookDeclined: false });
+    });
+
+    it('install --write clears it also when the hook is already there (nothing to change in the settings)', async () => {
+      await writeSettings({ hooks: { SessionStart: [ourGroup] } });
+      await mkdir(join(homeDir, '.mcpkit'), { recursive: true });
+      await writeFile(statePath(), JSON.stringify({ version: 1, adopted: {}, hookDeclined: true }));
+
+      await hook('install', '--write');
+
+      expect(out()).toContain('already installed');
+      expect(await readState()).toMatchObject({ hookDeclined: false });
+    });
+
+    it('a plain install creates no state file: there is no refusal to clear', async () => {
+      await hook('install', '--write');
+      expect(await readdir(homeDir)).toEqual(['.claude']);
+    });
+
+    it.each(['install', 'uninstall'])('a preview (%s without --write) changes nothing, the state file included', async (action) => {
+      await writeSettings({ hooks: { SessionStart: [ourGroup] } });
+      await hook(action);
+      expect(await readdir(homeDir)).toEqual(['.claude']);
+    });
+
+    it.each(['install', 'uninstall'])('%s --write on another settings file is not a choice about the global hook', async (action) => {
+      const project = join(homeDir, 'project', 'settings.json');
+      await mkdir(join(homeDir, 'project'), { recursive: true });
+      await writeFile(project, `${JSON.stringify({ hooks: { SessionStart: [ourGroup] } }, null, 2)}\n`);
+
+      await hook(action, '--settings', project, '--write');
+
+      expect((await readdir(homeDir)).sort()).toEqual(['project']);
+    });
+
+    it('uninstall --write on the global file given explicitly with --settings records the refusal: it is the same file', async () => {
+      await writeSettings({ hooks: { SessionStart: [ourGroup] } });
+      await mkdir(join(homeDir, '.mcpkit'), { recursive: true });
+      await writeFile(statePath(), JSON.stringify({ version: 1, adopted: {}, hookDeclined: false }));
+
+      // An absolute path, and the same path spelled with a `..` in it.
+      await hook('uninstall', '--settings', settingsPath, '--write');
+      expect(await readState()).toMatchObject({ hookDeclined: true });
+
+      await writeSettings({ hooks: { SessionStart: [ourGroup] } });
+      await writeFile(statePath(), JSON.stringify({ version: 1, adopted: {}, hookDeclined: false }));
+      await hook('uninstall', '--settings', join(homeDir, '.claude', '..', '.claude', 'settings.json'), '--write');
+      expect(await readState()).toMatchObject({ hookDeclined: true });
+    });
+
+    it('install --write on the global file given explicitly with --settings clears the refusal', async () => {
+      await mkdir(join(homeDir, '.mcpkit'), { recursive: true });
+      await writeFile(statePath(), JSON.stringify({ version: 1, adopted: {}, hookDeclined: true }));
+
+      await hook('install', '--settings', settingsPath, '--write');
+
+      expect(await readState()).toMatchObject({ hookDeclined: false });
+    });
+
+    it('a different settings file records nothing, whatever the state says: uninstall does not set the refusal and install does not clear it', async () => {
+      const project = join(homeDir, 'project', 'settings.json');
+      await mkdir(join(homeDir, 'project'), { recursive: true });
+      await writeFile(project, `${JSON.stringify({ hooks: { SessionStart: [ourGroup] } }, null, 2)}\n`);
+      await mkdir(join(homeDir, '.mcpkit'), { recursive: true });
+      await writeFile(statePath(), JSON.stringify({ version: 1, adopted: {}, hookDeclined: false }));
+
+      await hook('uninstall', '--settings', project, '--write');
+      expect(await readState()).toMatchObject({ hookDeclined: false });
+
+      await writeFile(statePath(), JSON.stringify({ version: 1, adopted: {}, hookDeclined: true }));
+      await hook('install', '--settings', project, '--write');
+      expect(await readState()).toMatchObject({ hookDeclined: true });
+    });
+
+    it('a state file that cannot be used is left alone, and the settings are still edited', async () => {
+      await writeSettings({ hooks: { SessionStart: [ourGroup] } });
+      await mkdir(join(homeDir, '.mcpkit'), { recursive: true });
+      await writeFile(statePath(), '{ nope');
+
+      await hook('uninstall', '--write');
+
+      expect(await readFile(statePath(), 'utf-8')).toBe('{ nope');
+      expect(JSON.parse(await readFile(settingsPath, 'utf-8'))).toEqual({});
+      expect(process.exitCode).toBeUndefined();
+    });
+  });
+
+  describe('a settings file with a number the rewrite would change (an integer beyond 2^53)', () => {
+    const BIG = '{\n  "id": 12345678901234567890,\n  "model": "opus"\n}\n';
+    const withHook = `{\n  "id": 12345678901234567890,\n  "hooks": {\n    "SessionStart": [${JSON.stringify(ourGroup)}]\n  }\n}\n`;
+
+    it.each([['install', ['install']], ['install --write', ['install', '--write']]])('%s: exit 1, nothing written, the entry printed to add by hand', async (_label, args) => {
+      await mkdir(join(homeDir, '.claude'), { recursive: true });
+      await writeFile(settingsPath, BIG);
+
+      await hook(...args);
+
+      expect(process.exitCode).toBe(1);
+      expect(await readFile(settingsPath, 'utf-8')).toBe(BIG);
+      expect(await readdir(join(homeDir, '.claude'))).toEqual(['settings.json']);
+      expect(await readdir(homeDir)).toEqual(['.claude']);
+      expect(out()).toContain('Entry to add by hand under hooks.SessionStart:');
+      expect(out()).toContain(JSON.stringify(ourGroup, null, 2));
+      expect(stderr.join('\n')).toContain('the integer 12345678901234567890, which a JSON parser cannot hold exactly');
+      expect(stderr.join('\n')).toContain('mcpkit hook install` (without --write) prints it');
+      expect(stderr.join('\n')).toContain('Nothing was written.');
+    });
+
+    it('uninstall --write: exit 1, nothing written, and no refusal recorded for a hook that is still there', async () => {
+      await mkdir(join(homeDir, '.claude'), { recursive: true });
+      await writeFile(settingsPath, withHook);
+
+      await hook('uninstall', '--write');
+
+      expect(process.exitCode).toBe(1);
+      expect(await readFile(settingsPath, 'utf-8')).toBe(withHook);
+      expect(await readdir(homeDir)).toEqual(['.claude']);
+      expect(out()).toContain('Hook entries to remove by hand from hooks.SessionStart:');
+      expect(stderr.join('\n')).toContain('Nothing was written.');
+    });
+
+    it('does not refuse an install that has nothing to change: the hook is there, so nothing is rewritten', async () => {
+      await mkdir(join(homeDir, '.claude'), { recursive: true });
+      await writeFile(settingsPath, withHook);
+
+      await hook('install', '--write');
+
+      expect(process.exitCode).toBeUndefined();
+      expect(out()).toContain('already installed');
+      expect(await readFile(settingsPath, 'utf-8')).toBe(withHook);
     });
   });
 

@@ -42,6 +42,23 @@ describe('generators', () => {
     expect(detectAgents()).toEqual(['openclaw']);
   });
 
+  it('detects the agents of the home directory the same way for `detectHomeAgents`, but never from the working directory', async () => {
+    const { detectAgents, detectHomeAgents } = await import('./generators/index.js');
+    const here = process.cwd();
+    // Every home folder is there, and every project folder of the working directory too.
+    existsSync.mockImplementation((path) => path.startsWith('/tmp/home/') || path.startsWith(`${here}/.`));
+    expect(detectHomeAgents()).toEqual(['claude-code', 'cursor', 'codex', 'windsurf', 'augment', 'openclaw', 'hermes']);
+    expect(detectAgents()).toEqual(detectHomeAgents());
+
+    // Only project folders: `mcpkit agents` calls those agents detected, the start-up reconcile does not.
+    existsSync.mockImplementation((path) => path === `${here}/.cursor` || path === `${here}/.windsurf` || path === `${here}/.augment`);
+    expect(detectHomeAgents()).toEqual([]);
+    expect(detectAgents()).toEqual(['cursor', 'windsurf', 'augment']);
+
+    existsSync.mockImplementation((path) => path === '/tmp/home/.agents');
+    expect(detectHomeAgents()).toEqual(['codex']);
+  });
+
   it('generates OpenClaw global skills in ~/.openclaw/skills', async () => {
     const { getGenerator } = await import('./generators/index.js');
     const generate = await getGenerator('openclaw');

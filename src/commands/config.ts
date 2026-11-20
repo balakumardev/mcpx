@@ -3,17 +3,21 @@ import chalk from 'chalk';
 import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
-import { isValidAgentType, loadAgentSettings, resolveServerAgents } from '../agent-config.js';
+import { basename, join } from 'node:path';
+import { agentsInUse, isValidAgentType, loadAgentSettings, resolveEntryAgents } from '../agent-config.js';
 import { listServers } from '../config.js';
 import { hasInstalledHook } from '../hook-settings.js';
 import { writeMetaSkill } from '../meta-skill.js';
+import { SKILL_DIR_PREFIX } from '../server-name.js';
+import { neutralize } from '../session-context.js';
 import {
   SKILL_MODES,
   SKILL_MODE_ENV,
+  isExplicitSource,
   isSkillMode,
   loadSettings,
   resolveSkillMode,
+  resolveSkillModeSource,
   saveSkillMode,
   withSkillMode,
 } from '../settings.js';
@@ -25,6 +29,8 @@ import {
   removeGeneratedSkillDirs,
 } from '../skill-mode-migration.js';
 import type { AgentMigrationPlan } from '../skill-mode-migration.js';
+import { deferredOf, loadState } from '../state.js';
+import type { AdoptedRecord, McpkitState } from '../state.js';
 import { runSync } from './sync.js';
 import { ALL_AGENTS } from '../types.js';
 import type { AgentType, ServerEntry } from '../types.js';
@@ -39,34 +45,63 @@ async function registeredServers(): Promise<Array<{ entry: ServerEntry; agents: 
   } catch (err) {
     console.warn(chalk.yellow(`Could not read the registry (${(err as Error).message.split('\n')[0]}); only agents named with --agent are considered.`));
   }
-  const defaults = await loadAgentSettings();
-  const found: Array<{ entry: ServerEntry; agents: AgentType[] }> = [];
-  for (const entry of servers) {
-    try {
-      found.push({ entry, agents: resolveServerAgents(entry, defaults).agents });
-    } catch {
-      // A server whose agent list is invalid is reported by the commands that use it.
-    }
-  }
-  return found;
+  return resolveEntryAgents(servers, await loadAgentSettings());
 }
 
-function printSettings(settings: LoadedSettings): void {
-  const state = existsSync(settings.path) ? 'present' : 'not created yet: the defaults apply';
+/**
+ * How many of the skills the start-up reconcile kept at adoption (the names in the record) are still on
+ * disk as skills mcpkit generated: a skill that `config lean on` or the cleanup of an indexed server
+ * removed since is not kept any more. A skills directory that cannot be read counts as none (nothing can be said of it).
+ */
+async function keptSkillCount(agent: AgentType, record: AdoptedRecord): Promise<number> {
+  const names = new Set(deferredOf(record));
+  if (names.size === 0) return 0;
+  try {
+    const generated = new Set((await planGuideMigration(agent)).remove.map((dir) => basename(dir).slice(SKILL_DIR_PREFIX.length)));
+    return [...names].filter((name) => generated.has(name)).length;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * What the start-up reconcile did for `agent` when it moved it to the guide (state.json), as one line;
+ * undefined for an agent it has not moved. The skills still kept are the ones whose servers are not
+ * indexed yet and whose skill is still there; the clause is left out when there are none.
+ */
+async function adoptionNote(agent: AgentType, state: McpkitState): Promise<string | undefined> {
+  if (!Object.hasOwn(state.adopted, agent)) return undefined;
+  const record = state.adopted[agent];
+  const date = /^\d{4}-\d{2}-\d{2}/.test(record.at) ? record.at.slice(0, 10) : neutralize(record.at);
+  const moved = `${record.removed} skill${record.removed === 1 ? '' : 's'} moved${record.removed > 0 && record.backup !== null ? ` to ${neutralize(record.backup)}` : ''}`;
+  const kept = await keptSkillCount(agent, record);
+  return `adopted ${date}: ${moved}${kept > 0 ? `; ${kept} kept until indexed` : ''}`;
+}
+
+async function printSettings(settings: LoadedSettings): Promise<void> {
+  const state = existsSync(settings.path) ? 'present' : 'not created yet: the built-in defaults apply';
   console.log(`Settings file: ${settings.path} (${state})`);
   for (const problem of settings.problems) console.warn(chalk.yellow(`Warning: ${problem}`));
   console.log();
-  console.log(`Skills (${MODE_HELP}): per-server writes one skill per registered server; guide writes only the mcpkit-cli guide.`);
+  console.log(`Skills (${MODE_HELP}): guide (lean, the default) writes only the mcpkit-cli guide, with a live list of your servers; per-server writes one skill per registered server.`);
+  // Read once: the state file is what mcpkit remembers about moving agents to the guide, and nothing here writes it.
+  const { state: remembered } = loadState();
   for (const agent of ALL_AGENTS) {
     const resolved = resolveSkillMode(settings, agent);
-    const source = resolved.source === 'default' ? 'default' : `${resolved.source} (${resolved.detail})`;
+    const source = resolved.source === 'default' ? 'built-in default' : `${resolved.source} (${resolved.detail})`;
     console.log(`  ${agent.padEnd(12)} ${resolved.mode.padEnd(11)} ${source}`);
+    const adopted = await adoptionNote(agent, remembered);
+    if (adopted !== undefined) console.log(chalk.dim(`    ${adopted}`));
   }
   console.log();
-  console.log(chalk.dim('Change it with: mcpkit config skills <per-server|guide> [--agent <agent>] [--dry-run]. Skills of --scope project installs are always per-server.'));
+  console.log(chalk.dim('Change it with: mcpkit config skills <per-server|guide> [--agent <agent>] [--dry-run], or mcpkit config lean <on|off>. Skills of --scope project installs are always per-server.'));
 }
 
-/** Warn, once per agent, about what the guide alone cannot do: tell the agent which servers exist. */
+/**
+ * Warn, once per agent, about what the guide alone cannot do. The guide carries a live list of the
+ * servers (names and a few words each in its description, the whole directory in its body), but only
+ * a session hook puts the full directory in front of the agent at the start of every session.
+ */
 async function warnAboutMissingHook(agents: AgentType[]): Promise<void> {
   for (const agent of agents) {
     if (agent === 'claude-code') {
@@ -78,15 +113,15 @@ async function warnAboutMissingHook(agents: AgentType[]): Promise<void> {
       }
       if (!hasInstalledHook(text)) {
         console.warn(chalk.yellow(
-          'Warning: claude-code has no SessionStart hook for mcpkit, so it will only learn about your servers from the mcpkit-cli guide skill. '
-          + 'Run `mcpkit hook install --write`, or add a pointer line to CLAUDE.md, for example: '
+          'Warning: claude-code has no SessionStart hook for mcpkit, so it learns about your servers only from the live list in the mcpkit-cli guide skill. '
+          + 'For the full directory at the start of every session run `mcpkit hook install --write`, or add a pointer line to CLAUDE.md, for example: '
           + '"MCP tools are reached with `mcpkit search <words>`, `mcpkit describe <server> <tool>` and `mcpkit exec`."',
         ));
       }
     } else {
       console.warn(chalk.yellow(
-        `Warning: there is no session hook for ${agent}, so it gets only the mcpkit-cli guide. `
-        + `Put a pointer line in its instructions file, or paste the output of \`mcpkit hook session-start --agent ${agent} --format text\`.`,
+        `Warning: there is no session hook for ${agent}, so it learns about your servers only from the live list in the mcpkit-cli guide skill. `
+        + `For the full directory, put a pointer line in its instructions file, or paste the output of \`mcpkit hook session-start --agent ${agent} --format text\`.`,
       ));
     }
   }
@@ -113,11 +148,19 @@ async function showGuideDryRun(plans: AgentMigrationPlan[], setting: string): Pr
   await warnAboutMissingHook(plans.map((plan) => plan.agent));
 }
 
-/** The agents `mode` applies to now, and the ones the environment keeps on another mode. */
+/**
+ * The agents `mode` applies to now, and the ones the environment keeps on another mode. An agent is a
+ * candidate when its mode changes, or when the setting makes explicit a mode it already had by the
+ * built-in default: skills written before the default became the guide are still on disk, and saying
+ * `guide` is how the user asks for them to be backed up and removed.
+ */
 function applicableAgents(before: LoadedSettings, after: LoadedSettings, mode: SkillMode, explicit: AgentType | undefined, inUse: AgentType[]): { apply: AgentType[]; overridden: AgentType[] } {
-  const candidates = explicit
-    ? [explicit]
-    : inUse.filter((agent) => resolveSkillMode(before, agent).mode !== resolveSkillMode(after, agent).mode);
+  const changes = (agent: AgentType): boolean => {
+    const was = resolveSkillModeSource(before, agent);
+    const now = resolveSkillModeSource(after, agent);
+    return was.mode !== now.mode || (!isExplicitSource(was.source) && isExplicitSource(now.source));
+  };
+  const candidates = explicit ? [explicit] : inUse.filter(changes);
   return {
     apply: candidates.filter((agent) => resolveSkillMode(after, agent).mode === mode),
     overridden: candidates.filter((agent) => resolveSkillMode(after, agent).mode !== mode),
@@ -147,7 +190,7 @@ async function setSkills(modeArg: string, opts: { agent?: string; dryRun?: boole
   }
   const after = withSkillMode(before, mode, agent);
   const servers = await registeredServers();
-  const inUse = ALL_AGENTS.filter((candidate) => servers.some((server) => server.agents.includes(candidate)));
+  const inUse = agentsInUse(servers);
   const { apply, overridden } = applicableAgents(before, after, mode, agent, inUse);
   const setting = `${agent ? `skills.agents.${agent}` : 'skills.default'} = ${mode} in ${before.path}`;
 
@@ -170,7 +213,8 @@ async function setSkills(modeArg: string, opts: { agent?: string; dryRun?: boole
     }
     if (apply.length > 0) console.log(chalk.blue(`Skills mode: ${apply.join(', ')} -> guide`));
     // The guide first, so that an agent is never left with neither the guide nor its skills.
-    if (apply.length > 0) await writeMetaSkill({ agents: apply, scope: 'global', logPrefix: '  ' });
+    // The settings it is about to save are passed along: on disk the agent is still on its old mode, and a guide written for it then would carry no server list.
+    if (apply.length > 0) await writeMetaSkill({ agents: apply, scope: 'global', logPrefix: '  ', settings: after });
     // The backup before the setting is saved and before anything is removed: a failure here changes nothing but the guide.
     const backup = await backupSkillDirs(plans);
     if (backup) console.log(chalk.green(`✓ Backed up ${plans.reduce((count, plan) => count + plan.remove.length, 0)} skill dir(s) to ${backup} (copy a directory back to restore it)`));
@@ -220,6 +264,25 @@ async function setSkills(modeArg: string, opts: { agent?: string; dryRun?: boole
   }
 }
 
+/** The action of `config skills [mode]`, and of `config lean`, which maps its on/off to a mode and comes here. */
+async function runSkillsCommand(mode: string | undefined, opts: { agent?: string; dryRun?: boolean }): Promise<void> {
+  try {
+    if (mode === undefined) {
+      if (opts.agent !== undefined || opts.dryRun) {
+        console.error(chalk.red(`--agent and --dry-run need a mode: mcpkit config skills <${SKILL_MODES.join('|')}>.`));
+        process.exit(2);
+        return;
+      }
+      await printSettings(await loadSettings());
+      return;
+    }
+    await setSkills(mode, opts);
+  } catch (err) {
+    console.error(chalk.red(`Error: ${err instanceof Error ? err.message : err}`));
+    process.exit(1);
+  }
+}
+
 export function createConfigCommand(): Command {
   const skills = new Command('skills')
     .description('Show or set how skills are written: one per server, or only the mcpkit-cli guide')
@@ -227,9 +290,10 @@ export function createConfigCommand(): Command {
     .option('--agent <agent>', `Apply to one agent (${ALL_AGENTS.join(', ')}); without it, to the default`)
     .option('--dry-run', 'Print what would be created, backed up and removed, and write nothing')
     .addHelpText('after', `
-per-server  one skill per registered server (the default)
-guide       only the mcpkit-cli guide; agents learn about your servers from \`mcpkit hook session-start\`
-            (run \`mcpkit hook install --write\` for Claude Code) or a pointer line in CLAUDE.md / AGENTS.md
+guide       only the mcpkit-cli guide, no per-server skills (also called lean mode, the default): the guide
+            carries a live list of your servers, and \`mcpkit hook session-start\` adds the full directory
+            at the start of every session (run \`mcpkit hook install --write\` for Claude Code)
+per-server  one skill per registered server
 
 Switching an agent to guide writes the guide first, copies every skill mcpkit generated for that agent
 to ~/.mcpkit/skill-backups/<yyyymmddhhmmss>/<agent>/, then removes them. A skill you wrote yourself,
@@ -241,31 +305,40 @@ Examples:
   $ mcpkit config skills                                   Show the mode of every agent
   $ mcpkit config skills guide --agent claude-code --dry-run   Preview
   $ mcpkit config skills guide --agent claude-code         Only the guide for Claude Code
-  $ mcpkit config skills per-server --agent claude-code    Back to one skill per server`)
-    .action(async (mode: string | undefined, opts: { agent?: string; dryRun?: boolean }) => {
-      try {
-        if (mode === undefined) {
-          if (opts.agent !== undefined || opts.dryRun) {
-            console.error(chalk.red(`--agent and --dry-run need a mode: mcpkit config skills <${SKILL_MODES.join('|')}>.`));
-            process.exit(2);
-            return;
-          }
-          printSettings(await loadSettings());
-          return;
-        }
-        await setSkills(mode, opts);
-      } catch (err) {
-        console.error(chalk.red(`Error: ${err instanceof Error ? err.message : err}`));
-        process.exit(1);
+  $ mcpkit config skills per-server --agent claude-code    Back to one skill per server
+
+\`mcpkit config lean on|off\` is a short form: on is \`skills guide\`, off is \`skills per-server\`.`)
+    .action(runSkillsCommand);
+
+  const lean = new Command('lean')
+    .description('lean = only the mcpkit-cli guide, no per-server skills (on is `config skills guide`, off is `config skills per-server`)')
+    .argument('<state>', 'on or off')
+    .option('--agent <agent>', `Apply to one agent (${ALL_AGENTS.join(', ')}); without it, to the default`)
+    .option('--dry-run', 'Print what would be created, backed up and removed, and write nothing')
+    .addHelpText('after', `
+Same as \`mcpkit config skills guide\` (on) and \`mcpkit config skills per-server\` (off), with the same
+options and the same output; see \`mcpkit config skills --help\` for what switching does.
+
+Examples:
+  $ mcpkit config lean on --dry-run                 Preview
+  $ mcpkit config lean on --agent claude-code       Lean mode for Claude Code only
+  $ mcpkit config lean off                          One skill per server again`)
+    .action(async (state: string, opts: { agent?: string; dryRun?: boolean }) => {
+      if (state !== 'on' && state !== 'off') {
+        console.error(chalk.red(`Unknown lean state ${JSON.stringify(state)}: use on or off.`));
+        process.exit(2);
+        return;
       }
+      await runSkillsCommand(state === 'on' ? 'guide' : 'per-server', opts);
     });
 
   return new Command('config')
     .description('Show or change mcpkit settings')
     .addCommand(skills)
+    .addCommand(lean)
     .addHelpText('after', `
-Settings live in ~/.mcpkit/config.yaml. \`mcpkit config\` shows them; \`mcpkit config skills\` changes how skills are written.`)
+Settings live in ~/.mcpkit/config.yaml. \`mcpkit config\` shows them; \`mcpkit config skills\` (or \`mcpkit config lean on|off\`) changes how skills are written.`)
     .action(async () => {
-      printSettings(await loadSettings());
+      await printSettings(await loadSettings());
     });
 }

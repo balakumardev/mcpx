@@ -1,5 +1,12 @@
 import chalk from 'chalk';
+import { access, readFile } from 'node:fs/promises';
+import { loadDirectoryServersChecked } from './directory.js';
+import type { DirectorySource } from './directory-snapshot.js';
 import { SCRIPTING_BLOCK, getGenerator } from './generators/index.js';
+import { buildGuideDirectory } from './guide-directory.js';
+import type { GuideDirectory } from './guide-directory.js';
+import { loadSettings, resolveSkillModeSource } from './settings.js';
+import type { LoadedSettings } from './settings.js';
 import { writeSkillFile } from './skill-file.js';
 import type { AgentType, Scope } from './types.js';
 
@@ -16,6 +23,54 @@ const META_DESCRIPTION =
   + '(list, view, edit, sync, update, remove, auth) registered servers. Use whenever the user '
   + 'wants to add a new MCP server, wire up an MCP tool, or manage existing mcpkit servers.';
 
+export interface BuildMetaSkillOptions {
+  /** The live server directory to put in the guide (its description and its body); without one the guide is the generic text. */
+  directory?: GuideDirectory;
+  /** The version written into the trailing marker; the version of this mcpkit by default. */
+  pkgVersion?: string;
+}
+
+/** The version of this mcpkit: injected at build time, and not defined when the sources run unbundled (a test, tsx). */
+export function defaultPkgVersion(): string {
+  return typeof __PKG_VERSION__ === 'string' ? __PKG_VERSION__ : '0.0.0-dev';
+}
+
+/**
+ * Characters that may not stand raw in a YAML double-quoted scalar for a strict parser (PyYAML, Ruby's
+ * Psych): the YAML 1.2 printable set (tab, space to `~`, U+00A0 to U+D7FF, U+E000 to U+FFFD, the astral
+ * planes) without U+0085, U+2028 and U+2029, which YAML 1.1 parsers take for line breaks. Everything else
+ * (controls, DEL, the C1 block, U+FFFE and U+FFFF) is not printable in either version.
+ */
+const NOT_RAW_IN_YAML = /[^\t\u0020-\u007E\u00A0-\u2027\u202A-\uD7FF\uE000-\uFFFD\u{10000}-\u{10FFFF}]/gu;
+
+/**
+ * `text` as a YAML double-quoted scalar on one line. JSON quoting is one (so a quote or a backslash in
+ * server text cannot break the line), but it leaves some characters raw that a strict YAML parser rejects
+ * or reads as a line break; those are written as `\uXXXX` escapes, which every parser decodes to the same
+ * text. The text from servers is cleaned before it gets here (`neutralize`), so this changes nothing for it:
+ * it keeps the frontmatter valid whatever reaches it.
+ */
+function yamlQuoted(text: string): string {
+  return JSON.stringify(text).replace(NOT_RAW_IN_YAML, (char) => `\\u${(char.codePointAt(0) ?? 0).toString(16).padStart(4, '0')}`);
+}
+
+const GUIDE_MARKER_LINE = /^<!-- mcpkit-guide v\S+ dir:\S+ -->$/;
+
+/**
+ * The last line of every guide: which mcpkit wrote it and a fingerprint of the directory in it
+ * (`none` when it has none). A guide whose marker equals the one a fresh write would produce is
+ * current, and nothing needs to be rewritten.
+ */
+function guideMarker(pkgVersion: string, directory: GuideDirectory | undefined): string {
+  return `<!-- mcpkit-guide v${pkgVersion} dir:${directory === undefined ? 'none' : directory.fingerprint} -->`;
+}
+
+/** The marker line a guide ends with, or null when `content` has none. */
+export function readGuideMarker(content: string): string | null {
+  const last = content.trimEnd().split('\n').pop() ?? '';
+  return GUIDE_MARKER_LINE.test(last) ? last : null;
+}
+
 /**
  * Build the `mcpkit-cli` meta-skill — a hand-authored SKILL.md that teaches an
  * agent how to drive the mcpkit CLI itself. Identical across every target agent
@@ -24,11 +79,14 @@ const META_DESCRIPTION =
  * Lines are single-quoted JS strings on purpose: backticks pass through as
  * literal markdown, and `${VAR}` placeholders are NOT interpolated.
  */
-export function buildMetaSkillContent(): string {
+export function buildMetaSkillContent(options: BuildMetaSkillOptions = {}): string {
+  const directory = options.directory !== undefined && options.directory.bodySection !== '' ? options.directory : undefined;
+  const description = directory === undefined ? META_DESCRIPTION : `${META_DESCRIPTION} ${directory.descriptionSuffix}`;
   const lines: string[] = [
     '---',
     'name: mcpkit-cli',
-    `description: "${META_DESCRIPTION}"`,
+    // A valid YAML double-quoted scalar on one line, whatever the server text holds.
+    `description: ${yamlQuoted(description)}`,
     '---',
     '',
     '# mcpkit CLI',
@@ -213,7 +271,10 @@ export function buildMetaSkillContent(): string {
     '',
   ];
 
-  return lines.join('\n');
+  const text = lines.join('\n');
+  const marker = guideMarker(options.pkgVersion ?? defaultPkgVersion(), directory);
+  // The directory, when there is one, goes after the guide proper; the marker is always the last line.
+  return directory === undefined ? `${text}${marker}\n` : `${text}\n${directory.bodySection}\n\n${marker}\n`;
 }
 
 export interface WriteMetaSkillOptions {
@@ -221,36 +282,134 @@ export interface WriteMetaSkillOptions {
   scope: Scope;
   dryRun?: boolean;
   logPrefix?: string;
+  /** Print nothing; the paths written are the result. */
+  quiet?: boolean;
+  /**
+   * The settings that decide each agent's skills mode, for a caller that is about to save a mode and
+   * writes the guide first (the default is the settings file as it is on disk).
+   */
+  settings?: LoadedSettings;
+  /** The version written into the guide's marker (default: this mcpkit's). */
+  pkgVersion?: string;
+  /** Where the directory of an agent comes from (default: the registry and the schema caches, read for each agent); a caller that writes several guides reads them once and passes that. */
+  directory?: DirectorySource;
+}
+
+async function guidePathOf(agent: AgentType, scope: Scope): Promise<string> {
+  const generate = await getGenerator(agent);
+  return generate({
+    serverName: META_SKILL_SERVER_NAME,
+    tools: [],
+    transport: { type: 'stdio', command: 'mcpkit', args: [] },
+    scope,
+  }).filePath;
+}
+
+interface GuidePlan {
+  path: string;
+  content: string;
+  /** The marker `content` ends with. */
+  marker: string;
+  /** The agent is in guide mode but the registry cannot be read, so `content` has no directory and says nothing about the servers. */
+  registryUnreadable: boolean;
 }
 
 /**
- * Write the `mcpkit-cli` meta-skill once per command run, to each target agent.
- * Call this from install/sync/update after the per-server skills are written.
+ * What the guide of `agent` is to say: the one place that decides it, for writing the guide and for
+ * telling whether the one on disk is current. An agent in guide mode gets the directory of its
+ * servers in the guide itself; so does nothing else: an agent with per-server skills, a project
+ * scope guide (the user's server list is not for a repository) and an empty registry get the
+ * generic guide.
  */
-export async function writeMetaSkill(options: WriteMetaSkillOptions): Promise<void> {
-  const { agents, scope, dryRun = false, logPrefix = '' } = options;
-  if (agents.length === 0) return;
+async function planGuide(agent: AgentType, scope: Scope, settings: LoadedSettings, pkgVersion: string, source: DirectorySource = loadDirectoryServersChecked): Promise<GuidePlan> {
+  let directory: GuideDirectory | undefined;
+  let registryUnreadable = false;
+  if (scope === 'global' && resolveSkillModeSource(settings, agent).mode === 'guide') {
+    const { servers, ok } = await source(agent);
+    if (!ok) registryUnreadable = true;
+    else if (servers.length > 0) directory = buildGuideDirectory(servers);
+  }
+  const content = buildMetaSkillContent({ directory, pkgVersion });
+  return { path: await guidePathOf(agent, scope), content, marker: readGuideMarker(content) ?? '', registryUnreadable };
+}
 
-  const content = buildMetaSkillContent();
+export interface GuideCheckOptions {
+  /** Settings to resolve the mode from (default: the settings file). */
+  settings?: LoadedSettings;
+  /** The version to expect in the marker (default: this mcpkit's). */
+  pkgVersion?: string;
+  /** Where the directory of an agent comes from (default: the registry and the schema caches, read for each call). */
+  directory?: DirectorySource;
+}
+
+/**
+ * The marker line the global guide of `agent` would end with if it were written now, or null when that
+ * cannot be told because the registry cannot be read. Reads the settings, the registry and the schema
+ * caches only: nothing is started, contacted or written.
+ */
+export async function expectedGuideMarker(agent: AgentType, options: GuideCheckOptions = {}): Promise<string | null> {
+  const plan = await planGuide(agent, 'global', options.settings ?? await loadSettings(), options.pkgVersion ?? defaultPkgVersion(), options.directory);
+  return plan.registryUnreadable ? null : plan.marker;
+}
+
+/** Whether the global guide of `agent` exists and ends with the marker a fresh write would produce. */
+export async function guideIsCurrent(agent: AgentType, options: GuideCheckOptions = {}): Promise<boolean> {
+  const plan = await planGuide(agent, 'global', options.settings ?? await loadSettings(), options.pkgVersion ?? defaultPkgVersion(), options.directory);
+  if (plan.registryUnreadable) return false;
+  try {
+    return readGuideMarker(await readFile(plan.path, 'utf-8')) === plan.marker;
+  } catch {
+    return false;
+  }
+}
+
+async function exists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Write the `mcpkit-cli` meta-skill once per command run, to each target agent, and return the paths
+ * written. Call this from install/sync/update after the per-server skills are written, so the
+ * directory in the guide of an agent in guide mode lists the server that was just added.
+ *
+ * A guide for an agent in guide mode carries the live directory of its servers. When the registry
+ * exists but cannot be read, an existing guide is left as it is (rewriting it would replace its
+ * directory with an empty one) and a missing one is written without a directory.
+ */
+export async function writeMetaSkill(options: WriteMetaSkillOptions): Promise<string[]> {
+  const { agents, scope, dryRun = false, logPrefix = '', quiet = false } = options;
+  const written: string[] = [];
+  if (agents.length === 0) return written;
+
+  const say = (text: string): void => {
+    if (!quiet) console.log(text);
+  };
+  const settings = options.settings ?? await loadSettings();
+  const pkgVersion = options.pkgVersion ?? defaultPkgVersion();
   const seen = new Set<AgentType>();
 
   for (const agent of agents) {
     if (seen.has(agent)) continue;
     seen.add(agent);
 
-    const generate = await getGenerator(agent);
-    const skill = generate({
-      serverName: META_SKILL_SERVER_NAME,
-      tools: [],
-      transport: { type: 'stdio', command: 'mcpkit', args: [] },
-      scope,
-    });
-
     if (dryRun) {
-      console.log(chalk.yellow(`${logPrefix}[dry-run] mcpkit-cli guide (${agent}): ${skill.filePath}`));
-    } else {
-      await writeSkillFile(skill.filePath, content);
-      console.log(chalk.green(`${logPrefix}✓ mcpkit-cli guide (${agent}): ${skill.filePath}`));
+      say(chalk.yellow(`${logPrefix}[dry-run] mcpkit-cli guide (${agent}): ${await guidePathOf(agent, scope)}`));
+      continue;
     }
+
+    const plan = await planGuide(agent, scope, settings, pkgVersion, options.directory);
+    if (plan.registryUnreadable && await exists(plan.path)) {
+      say(chalk.dim(`${logPrefix}mcpkit-cli guide (${agent}): left as it is, the registry cannot be read: ${plan.path}`));
+      continue;
+    }
+    await writeSkillFile(plan.path, plan.content);
+    written.push(plan.path);
+    say(chalk.green(`${logPrefix}✓ mcpkit-cli guide (${agent}): ${plan.path}`));
   }
+  return written;
 }

@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, expect, it, vi } from 'vitest';
 import { parse, stringify } from 'yaml';
 import { buildSkillContent } from '../../src/generators/index.js';
+import { buildGuideDirectory } from '../../src/guide-directory.js';
 import { buildMetaSkillContent } from '../../src/meta-skill.js';
 import { skillContext } from '../../src/skill-fixtures.js';
 
@@ -71,6 +72,15 @@ function writeSkill(dir: string, content: string): void {
   writeFileSync(skillFile(dir), content, 'utf-8');
 }
 
+/** The version the built CLI writes into the marker of a guide. */
+const pkgVersion = (JSON.parse(readFileSync(join(root, 'package.json'), 'utf-8')) as { version: string }).version;
+
+/** The guide the CLI writes for an agent in guide mode that serves the fake registry's servers: the same inputs, built here. */
+function guideListing(names: string[]): string {
+  const tools = [{ name: 'echo', description: 'Echo', inputSchema: { type: 'object' } }];
+  return buildMetaSkillContent({ directory: buildGuideDirectory(names.map((name) => ({ name, tools }))), pkgVersion });
+}
+
 const USER_NOTES = '---\nname: mcpkit-journal\ndescription: "My own journal skill"\n---\n\n# Journal\n';
 
 beforeAll(() => {
@@ -104,11 +114,11 @@ afterAll(() => {
 });
 
 it('walks an agent from per-server skills to the guide and back through the real CLI', () => {
-  // 1. Nothing is set: every agent gets per-server skills, and showing the setting creates nothing.
+  // 1. Nothing is set: every agent is on the built-in default, the guide, and showing the setting creates nothing.
   const before = tree(home);
   const show = cli(['config']);
   expect(show.code).toBe(0);
-  expect(show.stdout).toMatch(/claude-code\s+per-server\s+default/);
+  expect(show.stdout).toMatch(/claude-code\s+guide\s+built-in default/);
   expect(show.stdout).toContain(settingsFile());
   expect(tree(home)).toEqual(before);
 
@@ -130,7 +140,8 @@ it('walks an agent from per-server skills to the guide and back through the real
   expect(existsSync(join(skillsDir(), 'mcpkit-github'))).toBe(false);
   expect(existsSync(join(skillsDir(), 'mcpkit-slack-me'))).toBe(false);
   expect(readFileSync(skillFile('mcpkit-journal'), 'utf-8')).toBe(USER_NOTES);
-  expect(readFileSync(skillFile('mcpkit-cli'), 'utf-8')).toBe(buildMetaSkillContent());
+  // The guide of an agent in guide mode lists the servers of the registry that serve it.
+  expect(readFileSync(skillFile('mcpkit-cli'), 'utf-8')).toBe(guideListing(['github', 'slack-me', 'notes']));
   expect(tree(join(home, '.cursor'))).toEqual(cursorBefore);
   expect(statSync(settingsFile()).mode & 0o777).toBe(0o600);
   expect(parse(readFileSync(settingsFile(), 'utf-8'))).toEqual({ version: 1, skills: { agents: { 'claude-code': 'guide' } } });
@@ -152,7 +163,7 @@ it('walks an agent from per-server skills to the guide and back through the real
   const sync = cli(['sync']);
   expect(sync.code).toBe(0);
   expect(existsSync(join(skillsDir(), 'mcpkit-github'))).toBe(false);
-  expect(readFileSync(skillFile('mcpkit-cli'), 'utf-8')).toBe(buildMetaSkillContent());
+  expect(readFileSync(skillFile('mcpkit-cli'), 'utf-8')).toBe(guideListing(['github', 'slack-me', 'notes']));
 
   // 6. An install writes no per-server skill for the agent either, but registers the server.
   const install = cli(['install', `${process.execPath} ${fixturePath}`, '-n', 'fixture', '-a', 'claude-code']);
@@ -175,5 +186,6 @@ it('walks an agent from per-server skills to the guide and back through the real
     expect(readFileSync(skillFile(`mcpkit-${name}`), 'utf-8'), name).toContain(`name: mcpkit-${name}`);
   }
   expect(readFileSync(skillFile('mcpkit-journal'), 'utf-8')).toBe(USER_NOTES);
-  expect(readFileSync(skillFile('mcpkit-cli'), 'utf-8')).toBe(buildMetaSkillContent());
+  // An agent back on per-server skills gets the generic guide again, with no server list.
+  expect(readFileSync(skillFile('mcpkit-cli'), 'utf-8')).toBe(buildMetaSkillContent({ pkgVersion }));
 });

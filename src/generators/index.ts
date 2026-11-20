@@ -2,7 +2,7 @@ import { homedir } from 'node:os';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { existsSync } from 'node:fs';
 import type { AgentType, GeneratorContext, GeneratedSkill, ToolInfo, ServerRuntimeConfig } from '../types.js';
-import { DEFAULT_RUNTIME_IDLE_TIMEOUT_SEC, DEFAULT_RUNTIME_CALL_TIMEOUT_SEC } from '../types.js';
+import { ALL_AGENTS, DEFAULT_RUNTIME_IDLE_TIMEOUT_SEC, DEFAULT_RUNTIME_CALL_TIMEOUT_SEC } from '../types.js';
 import { buildCallExample, buildExampleArgs, callLine, shellQuote } from '../codegen/example-args.js';
 import { maskText } from '../redact-config.js';
 import { escapeControlChars, firstSentence } from '../search-index.js';
@@ -594,17 +594,34 @@ export async function getGenerator(agent: AgentType): Promise<(ctx: GeneratorCon
 }
 
 // Detect which agents are installed on the system
-export function detectAgents(): AgentType[] {
+/**
+ * The agents installed on this machine by the rule of their home directory alone (`~/.claude`, `~/.cursor`,
+ * `~/.codex` or `~/.agents`, `~/.codeium`, `~/.augment`, `~/.openclaw`, `$HERMES_HOME` or `~/.hermes`): the
+ * working directory plays no part, so the answer is the same wherever mcpkit runs. Code that creates files
+ * for an agent on its own (the start-up reconcile) asks this, so it never makes the folder of an agent that
+ * is not there.
+ */
+export function detectHomeAgents(): AgentType[] {
   const agents: AgentType[] = [];
   const home = homedir();
 
   if (existsSync(join(home, '.claude'))) agents.push('claude-code');
-  if (existsSync(join(process.cwd(), '.cursor')) || existsSync(join(home, '.cursor'))) agents.push('cursor');
+  if (existsSync(join(home, '.cursor'))) agents.push('cursor');
   if (existsSync(join(home, '.codex')) || existsSync(join(home, '.agents'))) agents.push('codex');
-  if (existsSync(join(process.cwd(), '.windsurf')) || existsSync(join(home, '.codeium'))) agents.push('windsurf');
-  if (existsSync(join(home, '.augment')) || existsSync(join(process.cwd(), '.augment'))) agents.push('augment');
+  if (existsSync(join(home, '.codeium'))) agents.push('windsurf');
+  if (existsSync(join(home, '.augment'))) agents.push('augment');
   if (existsSync(join(home, '.openclaw'))) agents.push('openclaw');
   if (existsSync(process.env.HERMES_HOME || join(home, '.hermes'))) agents.push('hermes');
 
   return agents;
+}
+
+/** The agents `mcpkit agents` calls detected: the home rule above, plus a project folder of the working directory for the agents that keep one (`.cursor`, `.windsurf`, `.augment`). */
+export function detectAgents(): AgentType[] {
+  const fromHome = new Set(detectHomeAgents());
+  const here = process.cwd();
+  if (existsSync(join(here, '.cursor'))) fromHome.add('cursor');
+  if (existsSync(join(here, '.windsurf'))) fromHome.add('windsurf');
+  if (existsSync(join(here, '.augment'))) fromHome.add('augment');
+  return ALL_AGENTS.filter((agent) => fromHome.has(agent));
 }

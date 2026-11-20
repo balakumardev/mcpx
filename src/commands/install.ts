@@ -16,6 +16,7 @@ import { detectAgents } from '../generators/index.js';
 import { buildRuntimeConfig } from '../runtime-config.js';
 import { reconcileSkillFiles } from '../skill-sync.js';
 import { writeMetaSkill } from '../meta-skill.js';
+import { reconcileAfterChange } from '../reconcile.js';
 import { scrubSecrets } from '../sandbox/redact.js';
 import { quoteName, serverNameError } from '../server-name.js';
 import { ALL_AGENTS } from '../types.js';
@@ -580,6 +581,8 @@ Persistent stdio runtime:
           scope: opts.scope || 'global',
           dryRun: opts.dryRun,
         });
+        // Last: a new user gets the lean setup (the guide, the hook) with their first server.
+        if (!opts.dryRun) await reconcileAfterChange();
       } catch (err) {
         console.error(chalk.red(`Error: ${err instanceof Error ? err.message : err}`));
         process.exit(1);

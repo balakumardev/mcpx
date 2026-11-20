@@ -162,7 +162,7 @@ describe('mcpkit hook session-start', () => {
   });
 
   describe('which servers', () => {
-    it('keeps the servers that serve the agent; a server with no agents, or an empty list, counts for every agent', async () => {
+    it('keeps the servers that serve the agent by the rule that places per-server skills: the stored list, and Claude Code for an empty or missing one', async () => {
       await writeRegistry([
         entry('for-claude', { agents: ['claude-code'] }),
         entry('for-codex', { agents: ['codex'] }),
@@ -180,8 +180,46 @@ describe('mcpkit hook session-start', () => {
 
       const names = (text: string): string[] => text.split('\n').filter((line) => line.startsWith('- ')).map((line) => line.slice(2).split(/[ :]/)[0]);
       expect(names(claude)).toEqual(['for-both', 'for-claude', 'for-nobody-listed', 'no-list']);
-      expect(names(codex)).toEqual(['for-both', 'for-codex', 'for-nobody-listed', 'no-list']);
+      expect(names(codex)).toEqual(['for-both', 'for-codex']);
       expect(claude).toContain('mcpkit: 4 MCP servers');
+    });
+
+    describe('an agent that was enabled after the servers were installed', () => {
+      const names = (text: string): string[] => text.split('\n').filter((line) => line.startsWith('- ')).map((line) => line.slice(2).split(/[ :]/)[0]);
+      const saveDefaults = (enabledAgents: AgentType[]) => writeFile(
+        join(homeDir, '.mcpkit', 'settings.yaml'),
+        stringify({ version: 1, enabledAgents, updatedAt: '2026-01-01T00:00:00.000Z' }),
+        'utf-8',
+      );
+
+      it('lists a server in defaults mode for it although the stored agents of the server are stale, and respects an explicit list', async () => {
+        await writeRegistry([
+          // Installed when only Claude Code was enabled: the stored list says so, the mode says "follow the defaults".
+          entry('follows-defaults', { agents: ['claude-code'], agentSelectionMode: 'defaults' }),
+          entry('mode-not-stored', { agents: ['claude-code'] }),
+          entry('pinned-to-claude', { agents: ['claude-code'], agentSelectionMode: 'explicit' }),
+          entry('pinned-to-cursor', { agents: ['cursor'], agentSelectionMode: 'explicit' }),
+        ]);
+        await saveDefaults(['claude-code', 'cursor']);
+
+        await run(['--format', 'text', '--agent', 'cursor']);
+        const cursor = stdout;
+        stdout = '';
+        await run(['--format', 'text']);
+        const claude = stdout;
+
+        expect(names(cursor)).toEqual(['follows-defaults', 'mode-not-stored', 'pinned-to-cursor']);
+        expect(names(claude)).toEqual(['follows-defaults', 'mode-not-stored', 'pinned-to-claude']);
+      });
+
+      it('does not list a defaults-mode server for an agent that is not among the saved defaults, whatever its stored list says', async () => {
+        await writeRegistry([entry('follows-defaults', { agents: ['claude-code', 'codex'], agentSelectionMode: 'defaults' })]);
+        await saveDefaults(['claude-code']);
+
+        await run(['--format', 'text', '--agent', 'codex']);
+
+        expect(stdout).toBe('');
+      });
     });
 
     it('lists a server that has no schema cache yet as not cached, with its registry description when it has one', async () => {

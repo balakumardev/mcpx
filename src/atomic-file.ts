@@ -107,7 +107,14 @@ export async function withFileLock<T>(
     }
   }
 
-  // Touch the lock while the task runs: only a holder that is gone stops, and so only its lock goes stale.
+  return runWhileHeld(lockPath, staleMs, task);
+}
+
+/**
+ * Run `task` while the lock at `lockPath` (already taken by the caller) is touched, so that only a
+ * holder that is gone stops touching it and goes stale; then release it.
+ */
+async function runWhileHeld<T>(lockPath: string, staleMs: number, task: () => Promise<T>): Promise<T> {
   const heartbeat = setInterval(() => {
     const now = new Date();
     utimes(lockPath, now, now).catch(() => {});
@@ -120,6 +127,38 @@ export async function withFileLock<T>(
     clearInterval(heartbeat);
     await rmdir(lockPath).catch(() => {});
   }
+}
+
+/** What `tryWithFileLock` did: ran the task, or found the lock held by a live process and did nothing. */
+export type TryLockResult<T> = { acquired: true; value: T } | { acquired: false };
+
+/** How many times `tryWithFileLock` retries after it has broken a stale lock, before it calls the lock busy. */
+const MAX_BREAK_RETRIES = 5;
+
+/**
+ * `withFileLock` that never waits: one attempt to take the lock, and when a live process holds it
+ * the task does not run and the answer is `{ acquired: false }`. A lock that is stale (`staleMs`, a
+ * holder that died) is broken as in `withFileLock`. Errors other than "held" (an unwritable
+ * directory, for one) are thrown.
+ */
+export async function tryWithFileLock<T>(
+  lockPath: string,
+  task: () => Promise<T>,
+  options: Pick<FileLockOptions, 'staleMs'> = {},
+): Promise<TryLockResult<T>> {
+  const staleMs = options.staleMs ?? DEFAULT_LOCK_OPTIONS.staleMs;
+  await mkdir(dirname(lockPath), { recursive: true });
+
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await mkdir(lockPath);
+      break;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+      if (attempt >= MAX_BREAK_RETRIES || !(await breakStaleLock(lockPath, staleMs))) return { acquired: false };
+    }
+  }
+  return { acquired: true, value: await runWhileHeld(lockPath, staleMs, task) };
 }
 
 export interface WriteFileAtomicOptions {

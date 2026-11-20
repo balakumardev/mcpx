@@ -48,6 +48,8 @@ describe('reconcileSkillFiles with several agents', () => {
     home = await mkdtemp(join(tmpdir(), 'mcpkit-skill-sync-'));
     process.env.HOME = home;
     delete process.env.HERMES_HOME;
+    // This file is about writing the per-server skills of several agents; the default (the guide) writes none.
+    vi.stubEnv('MCPKIT_SKILLS', 'per-server');
     log = [];
     vi.spyOn(console, 'log').mockImplementation((...parts) => { log.push(parts.join(' ')); });
     vi.mocked(fs.rename).mockReset();
@@ -58,6 +60,7 @@ describe('reconcileSkillFiles with several agents', () => {
     if (originalHome === undefined) delete process.env.HOME;
     else process.env.HOME = originalHome;
     if (originalHermes !== undefined) process.env.HERMES_HOME = originalHermes;
+    vi.unstubAllEnvs();
     await rm(home, { recursive: true, force: true });
     vi.restoreAllMocks();
   });

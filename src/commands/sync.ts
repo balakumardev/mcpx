@@ -9,6 +9,7 @@ import { perServerAgents } from '../settings.js';
 import { getGenerator } from '../generators/index.js';
 import { reconcileSkillFiles } from '../skill-sync.js';
 import { writeMetaSkill } from '../meta-skill.js';
+import { reconcileAfterChange } from '../reconcile.js';
 import { OAuthRequiredError } from '../oauth-required-error.js';
 import { scrubSecrets } from '../sandbox/redact.js';
 import type { AgentType, ServerEntry } from '../types.js';
@@ -178,6 +179,7 @@ change the exit code. With a name, sync may open the browser to sign in to that 
     .action(async (name?: string, opts?: { force?: boolean; dryRun?: boolean }) => {
       try {
         await runSync(name, { force: opts?.force, dryRun: opts?.dryRun });
+        if (!opts?.dryRun) await reconcileAfterChange();
       } catch (err) {
         console.error(chalk.red(`Error: ${err instanceof Error ? err.message : err}`));
         process.exit(1);

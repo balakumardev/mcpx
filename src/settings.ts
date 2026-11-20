@@ -13,8 +13,10 @@ import type { AgentType, Scope } from './types.js';
  * written here.
  *
  * Today there is one setting, how skills are written (`skills`):
- *   per-server  one skill per registered server (the default)
- *   guide       only the `mcpkit-cli` guide; the agent learns about the servers from the session hook
+ *   guide       only the `mcpkit-cli` guide, no per-server skills (also called lean mode, the default);
+ *               the agent learns about the servers from the session hook or, for an agent with no hook,
+ *               from the live server list written into the guide itself
+ *   per-server  one skill per registered server
  *
  * Reading never throws: a missing, unreadable or invalid file means the defaults, and
  * `LoadedSettings.problems` says what was wrong so that `mcpkit config` can report it.
@@ -23,7 +25,7 @@ import type { AgentType, Scope } from './types.js';
 export const SKILL_MODES = ['per-server', 'guide'] as const;
 export type SkillMode = (typeof SKILL_MODES)[number];
 
-export const DEFAULT_SKILL_MODE: SkillMode = 'per-server';
+export const DEFAULT_SKILL_MODE: SkillMode = 'guide';
 
 /** Overrides the file for every agent: `guide` or `per-server`. */
 export const SKILL_MODE_ENV = 'MCPKIT_SKILLS';
@@ -48,9 +50,29 @@ export interface LoadedSettings {
 
 export interface ResolvedSkillMode {
   mode: SkillMode;
+  /** `default` here is the built-in fallback: nothing was configured. */
   source: 'env' | 'file' | 'default';
   /** Which setting decided: `MCPKIT_SKILLS`, `agents.<agent>` or `skills.default`. */
   detail?: string;
+}
+
+/**
+ * Which setting decided the mode of an agent:
+ *   env      `MCPKIT_SKILLS`
+ *   agent    `skills.agents.<agent>` in the settings file
+ *   default  `skills.default` in the settings file
+ *   builtin  nothing was configured, so the built-in default applies
+ */
+export type SkillModeSource = 'env' | 'agent' | 'default' | 'builtin';
+
+export interface SkillModeWithSource {
+  mode: SkillMode;
+  source: SkillModeSource;
+}
+
+/** Whether somebody chose the mode (the environment or the settings file), as opposed to the built-in default. */
+export function isExplicitSource(source: SkillModeSource): boolean {
+  return source === 'env' || source === 'agent' || source === 'default';
 }
 
 const FILE_VERSION = 1;
@@ -75,8 +97,12 @@ export function getSettingsPath(): string {
   return join(homedir(), '.mcpkit', 'config.yaml');
 }
 
-/** The mode `MCPKIT_SKILLS` asks for, or what is wrong with its value (an empty value counts as unset). */
-function readEnvMode(env: NodeJS.ProcessEnv): { mode?: SkillMode; problem?: string } {
+/**
+ * The mode `MCPKIT_SKILLS` asks for, or what is wrong with its value (an empty value counts as unset).
+ * Only a valid value is a choice: an invalid one is ignored everywhere (`mcpkit config` says so, and the
+ * start-up reconcile treats the variable as unset).
+ */
+export function readEnvMode(env: NodeJS.ProcessEnv): { mode?: SkillMode; problem?: string } {
   const raw = env[SKILL_MODE_ENV]?.trim().toLowerCase();
   if (raw === undefined || raw === '') return {};
   if (isSkillMode(raw)) return { mode: raw };
@@ -158,14 +184,28 @@ export async function loadSettings(): Promise<LoadedSettings> {
   return loaded;
 }
 
-/** The mode of `agent`: the environment, then its own entry, then the default entry, then per-server. */
-export function resolveSkillMode(settings: LoadedSettings, agent: AgentType, env: NodeJS.ProcessEnv = process.env): ResolvedSkillMode {
+/**
+ * The mode of `agent` and what decided it: the environment, then its own entry, then the default
+ * entry, then the built-in default (`guide`). `builtin` means nothing was configured.
+ */
+export function resolveSkillModeSource(settings: LoadedSettings, agent: AgentType, env: NodeJS.ProcessEnv = process.env): SkillModeWithSource {
   const fromEnv = readEnvMode(env).mode;
-  if (fromEnv) return { mode: fromEnv, source: 'env', detail: SKILL_MODE_ENV };
+  if (fromEnv) return { mode: fromEnv, source: 'env' };
   const own = settings.skills.agents[agent];
-  if (own) return { mode: own, source: 'file', detail: `agents.${agent}` };
-  if (settings.skills.default) return { mode: settings.skills.default, source: 'file', detail: 'skills.default' };
-  return { mode: DEFAULT_SKILL_MODE, source: 'default' };
+  if (own) return { mode: own, source: 'agent' };
+  if (settings.skills.default) return { mode: settings.skills.default, source: 'default' };
+  return { mode: DEFAULT_SKILL_MODE, source: 'builtin' };
+}
+
+/** The mode of `agent`, with the setting that decided it named in `detail` (see `resolveSkillModeSource`). */
+export function resolveSkillMode(settings: LoadedSettings, agent: AgentType, env: NodeJS.ProcessEnv = process.env): ResolvedSkillMode {
+  const { mode, source } = resolveSkillModeSource(settings, agent, env);
+  switch (source) {
+    case 'env': return { mode, source: 'env', detail: SKILL_MODE_ENV };
+    case 'agent': return { mode, source: 'file', detail: `agents.${agent}` };
+    case 'default': return { mode, source: 'file', detail: 'skills.default' };
+    case 'builtin': return { mode, source: 'default' };
+  }
 }
 
 export async function skillModeFor(agent: AgentType): Promise<SkillMode> {

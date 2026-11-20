@@ -3,6 +3,7 @@ import chalk from 'chalk';
 import { getServer, removeServer, updateServer } from '../config.js';
 import { getGenerator } from '../generators/index.js';
 import { loadAgentSettings, normalizeAgentList, resolveServerAgents } from '../agent-config.js';
+import { reconcileAfterChange } from '../reconcile.js';
 import { stopRuntime } from '../runtime-manager.js';
 import { removeSchemaCache } from '../schema-store.js';
 import { removeSkillDirectory } from '../skill-file.js';
@@ -83,6 +84,8 @@ Examples:
             console.log(chalk.green(`✓ Removed ${opts.agent} skill for "${name}"`));
           }
         }
+        // The guide still lists the server until it is rewritten.
+        await reconcileAfterChange();
       } catch (err) {
         console.error(chalk.red(`Error: ${err instanceof Error ? err.message : err}`));
         process.exit(1);
