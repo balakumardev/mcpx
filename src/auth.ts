@@ -1,7 +1,7 @@
-import { createServer, type Server } from 'node:http';
+import { createServer } from 'node:http';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { exec } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { platform } from 'node:os';
 import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js';
 import { auth } from '@modelcontextprotocol/sdk/client/auth.js';
@@ -9,6 +9,7 @@ import type { OAuthClientMetadata, OAuthClientInformationMixed, OAuthTokens } fr
 import { readStateFile, stateFileError, withFileLock, writeFileAtomic } from './atomic-file.js';
 import type { OAuthConfig } from './types.js';
 import { redirectSafeFetch } from './client.js';
+import { OAuthRequiredError } from './oauth-required-error.js';
 
 // --- Credential storage ---
 
@@ -94,14 +95,22 @@ function isTokenExpired(creds: ServerCredentials): boolean {
 
 // --- Browser launch ---
 
-function openBrowser(url: string): void {
-  const cmd = platform() === 'darwin'
-    ? `open "${url}"`
+/** Opens an authorization URL for the user. Injected by tests so that none of them can launch a browser. */
+export type BrowserOpener = (url: string) => void;
+
+/**
+ * Opens the URL in the system browser. The URL comes from the server's OAuth metadata, so it is passed
+ * as one argument and never through a shell, where `$(...)` in it would run. A missing opener is not an
+ * error here: the sign-in then ends with the callback timeout and its message.
+ */
+const openBrowser: BrowserOpener = (url) => {
+  const [command, args] = platform() === 'darwin'
+    ? ['open', [url]]
     : platform() === 'win32'
-      ? `start "" "${url}"`
-      : `xdg-open "${url}"`;
-  exec(cmd);
-}
+      ? ['rundll32', ['url.dll,FileProtocolHandler', url]]
+      : ['xdg-open', [url]];
+  execFile(command, args, () => {});
+};
 
 // --- Callback server ---
 
@@ -109,62 +118,123 @@ interface CallbackResult {
   code: string;
 }
 
-function startCallbackServer(port: number): { server: Server; codePromise: Promise<CallbackResult> } {
-  let resolveCode: (result: CallbackResult) => void;
-  let rejectCode: (err: Error) => void;
+/** A listener for the browser's redirect back to mcpkit, and the code it will deliver. */
+interface CallbackFlow {
+  /**
+   * The authorization code, or the reason there will be none (timeout, `cancel`, an `error` redirect).
+   * Awaiting callers see the rejection; nobody else is made to handle it.
+   */
+  codePromise: Promise<CallbackResult>;
+  /** Ends the flow now: the port is released and `codePromise` rejects with `reason`. Does nothing once the flow has ended. */
+  cancel(reason: Error): void;
+}
 
-  const codePromise = new Promise<CallbackResult>((resolve, reject) => {
-    resolveCode = resolve;
-    rejectCode = reject;
-  });
+const DEFAULT_CALLBACK_TIMEOUT_MS = 120_000;
 
-  const server = createServer((req, res) => {
-    const url = new URL(req.url || '/', `http://127.0.0.1:${port}`);
+/**
+ * How long to wait for the browser. `MCPKIT_OAUTH_TIMEOUT_MS` shortens it so that tests of the
+ * timeout path do not take two minutes; it is not a user setting.
+ */
+function resolveCallbackTimeoutMs(override?: number): number {
+  if (override !== undefined) return override;
+  const fromEnv = Number(process.env.MCPKIT_OAUTH_TIMEOUT_MS);
+  return Number.isInteger(fromEnv) && fromEnv > 0 ? fromEnv : DEFAULT_CALLBACK_TIMEOUT_MS;
+}
 
-    if (url.pathname !== '/callback') {
-      res.writeHead(404);
-      res.end('Not found');
-      return;
-    }
+function describeWait(timeoutMs: number): string {
+  if (timeoutMs % 1000 !== 0) return `${timeoutMs} ms`;
+  const seconds = timeoutMs / 1000;
+  return `${seconds} ${seconds === 1 ? 'second' : 'seconds'}`;
+}
 
-    const code = url.searchParams.get('code');
-    const error = url.searchParams.get('error');
+/**
+ * Listen on 127.0.0.1:`port` for the OAuth redirect. Resolves once the port is bound, so a busy port
+ * is an error before any browser opens. From then on the flow ends exactly once, through `finish`:
+ * a code, an `error` redirect, the timeout or `cancel`. Every end clears the timer and closes the
+ * server, and the rejecting ends cannot become an unhandled rejection.
+ */
+function startCallbackServer(port: number, timeoutMs: number): Promise<CallbackFlow> {
+  return new Promise<CallbackFlow>((resolveStart, rejectStart) => {
+    let resolveCode!: (result: CallbackResult) => void;
+    let rejectCode!: (err: Error) => void;
+    const codePromise = new Promise<CallbackResult>((resolve, reject) => {
+      resolveCode = resolve;
+      rejectCode = reject;
+    });
+    // The flow can end with nobody awaiting it (the SDK gave up, or a newer attempt replaced it).
+    // This handler is what keeps that rejection from killing the process; callers awaiting
+    // `codePromise` still receive it.
+    codePromise.catch(() => {});
 
-    if (error) {
-      const desc = url.searchParams.get('error_description') || error;
+    let ended = false;
+    let timer: NodeJS.Timeout | undefined;
+    let listening = false;
+
+    // `dropConnections`: nobody is coming back, so a connection the browser still holds open must not keep
+    // the port. A flow that ends with a page being served closes gracefully and lets that page finish.
+    const finish = (outcome: CallbackResult | Error, dropConnections = false): void => {
+      if (ended) return;
+      ended = true;
+      clearTimeout(timer);
+      server.close();
+      if (dropConnections) server.closeAllConnections();
+      if (outcome instanceof Error) {
+        rejectCode(outcome);
+      } else {
+        resolveCode(outcome);
+      }
+    };
+
+    const server = createServer((req, res) => {
+      const url = new URL(req.url || '/', `http://127.0.0.1:${port}`);
+
+      if (url.pathname !== '/callback') {
+        res.writeHead(404);
+        res.end('Not found');
+        return;
+      }
+
+      const code = url.searchParams.get('code');
+      const error = url.searchParams.get('error');
+
+      if (error) {
+        const desc = url.searchParams.get('error_description') || error;
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end(`<html><body><h2>Authorization Failed</h2><p>${desc}</p><p>You can close this tab.</p></body></html>`);
+        finish(new Error(`OAuth error: ${desc}`));
+        return;
+      }
+
+      if (!code) {
+        res.writeHead(400, { 'Content-Type': 'text/html' });
+        res.end('<html><body><h2>Missing Code</h2><p>No authorization code received.</p></body></html>');
+        return;
+      }
+
       res.writeHead(200, { 'Content-Type': 'text/html' });
-      res.end(`<html><body><h2>Authorization Failed</h2><p>${desc}</p><p>You can close this tab.</p></body></html>`);
-      resolveCode = undefined as any;
-      rejectCode(new Error(`OAuth error: ${desc}`));
-      return;
-    }
+      res.end('<html><body><h2>Authorization Successful</h2><p>You can close this tab and return to your terminal.</p></body></html>');
+      finish({ code });
+    });
 
-    if (!code) {
-      res.writeHead(400, { 'Content-Type': 'text/html' });
-      res.end('<html><body><h2>Missing Code</h2><p>No authorization code received.</p></body></html>');
-      return;
-    }
+    server.on('error', (err: NodeJS.ErrnoException) => {
+      const reason = new Error(
+        `Could not listen for the OAuth callback on 127.0.0.1:${port} (${err.code ?? err.message}). Try again with \`mcpkit auth <server>\`.`,
+      );
+      if (listening) {
+        finish(reason, true);
+      } else {
+        rejectStart(reason);
+      }
+    });
 
-    res.writeHead(200, { 'Content-Type': 'text/html' });
-    res.end('<html><body><h2>Authorization Successful</h2><p>You can close this tab and return to your terminal.</p></body></html>');
-    resolveCode({ code });
+    server.listen(port, '127.0.0.1', () => {
+      listening = true;
+      timer = setTimeout(() => {
+        finish(new Error(`OAuth callback timed out after ${describeWait(timeoutMs)}. Try again with \`mcpkit auth <server>\`.`), true);
+      }, timeoutMs);
+      resolveStart({ codePromise, cancel: (reason) => finish(reason, true) });
+    });
   });
-
-  server.listen(port, '127.0.0.1');
-
-  // Timeout after 120 seconds
-  const timeout = setTimeout(() => {
-    rejectCode(new Error('OAuth callback timed out after 120 seconds. Try again with `mcpkit auth <server>`.'));
-    server.close();
-  }, 120_000);
-
-  // Clean up timeout when code is received
-  codePromise.finally(() => {
-    clearTimeout(timeout);
-    server.close();
-  });
-
-  return { server, codePromise };
 }
 
 // --- Find available port ---
@@ -197,13 +267,21 @@ async function isPortAvailable(port: number): Promise<boolean> {
 
 // --- OAuth Provider ---
 
-export interface McpkitOAuthProviderOptions {
+/** What an interactive sign-in needs besides the server: how to open the browser and how long to wait for it. */
+export interface InteractiveAuthOptions {
+  /** Defaults to the system browser. Tests pass a recorder. */
+  openBrowser?: BrowserOpener;
+  /** Defaults to 120 s. */
+  callbackTimeoutMs?: number;
+}
+
+export interface McpkitOAuthProviderOptions extends InteractiveAuthOptions {
   /**
-   * When set, the provider only uses and refreshes tokens that are already
-   * stored: it never registers a client, starts an authorization or opens a
-   * browser. Those steps throw this message instead.
+   * The registry name of the server. When set, the provider is non-interactive: it only uses and
+   * refreshes tokens that are already stored, and never registers a client, starts an authorization,
+   * opens a browser or listens on a port. Those steps throw an OAuthRequiredError for this server.
    */
-  blockedMessage?: string;
+  nonInteractiveFor?: string;
 }
 
 export class McpkitOAuthProvider implements OAuthClientProvider {
@@ -212,8 +290,10 @@ export class McpkitOAuthProvider implements OAuthClientProvider {
   private store: CredentialStore;
   private credentials: ServerCredentials;
   private oauthConfig?: OAuthConfig;
-  private blockedMessage?: string;
-  private _codePromise?: Promise<CallbackResult>;
+  private nonInteractiveFor?: string;
+  private openBrowser: BrowserOpener;
+  private callbackTimeoutMs?: number;
+  private pendingFlow?: CallbackFlow;
 
   constructor(
     serverUrl: string,
@@ -226,12 +306,14 @@ export class McpkitOAuthProvider implements OAuthClientProvider {
     this.port = port;
     this.store = store;
     this.oauthConfig = oauthConfig;
-    this.blockedMessage = options.blockedMessage;
+    this.nonInteractiveFor = options.nonInteractiveFor;
+    this.openBrowser = options.openBrowser ?? openBrowser;
+    this.callbackTimeoutMs = options.callbackTimeoutMs;
     this.credentials = store[serverUrl] || {};
   }
 
   private assertInteractive(): void {
-    if (this.blockedMessage) throw new Error(this.blockedMessage);
+    if (this.nonInteractiveFor !== undefined) throw new OAuthRequiredError(this.nonInteractiveFor);
   }
 
   get redirectUrl(): URL {
@@ -259,6 +341,9 @@ export class McpkitOAuthProvider implements OAuthClientProvider {
         ...(this.oauthConfig.clientSecret ? { client_secret: this.oauthConfig.clientSecret } : {}),
       } as OAuthClientInformationMixed;
     }
+    // Nothing stored: the SDK would register a client now, with a request to the server, before
+    // `saveClientInformation` could refuse it. A non-interactive provider refuses here instead.
+    this.assertInteractive();
     return undefined;
   }
 
@@ -299,18 +384,24 @@ export class McpkitOAuthProvider implements OAuthClientProvider {
 
   async redirectToAuthorization(authorizationUrl: URL): Promise<void> {
     this.assertInteractive();
-    const { server: _server, codePromise } = startCallbackServer(this.port);
-    this._codePromise = codePromise;
-    openBrowser(authorizationUrl.toString());
+    // An earlier attempt that nobody waited for would otherwise keep its port and timer.
+    this.pendingFlow?.cancel(new Error('OAuth sign-in was replaced by a newer attempt.'));
+    // Listen first, open the browser second: a busy callback port is reported here, with its reason,
+    // instead of leaving the user on a consent page whose redirect goes nowhere.
+    this.pendingFlow = await startCallbackServer(this.port, resolveCallbackTimeoutMs(this.callbackTimeoutMs));
+    this.openBrowser(authorizationUrl.toString());
   }
 
   async waitForAuthorizationCode(): Promise<string> {
-    if (!this._codePromise) {
+    const flow = this.pendingFlow;
+    if (!flow) {
       throw new Error('No authorization flow in progress. Call redirectToAuthorization first.');
     }
-    const result = await this._codePromise;
-    this._codePromise = undefined;
-    return result.code;
+    try {
+      return (await flow.codePromise).code;
+    } finally {
+      if (this.pendingFlow === flow) this.pendingFlow = undefined;
+    }
   }
 
   async invalidateCredentials(scope: 'all' | 'client' | 'tokens' | 'verifier'): Promise<void> {
@@ -336,7 +427,11 @@ export class McpkitOAuthProvider implements OAuthClientProvider {
 
 // --- High-level helpers ---
 
-export async function createOAuthProvider(serverUrl: string, oauthConfig?: OAuthConfig): Promise<McpkitOAuthProvider> {
+export async function createOAuthProvider(
+  serverUrl: string,
+  oauthConfig?: OAuthConfig,
+  interactive: InteractiveAuthOptions = {},
+): Promise<McpkitOAuthProvider> {
   const store = await loadCredentials();
   // Reuse the port from a previous registration if available, so the redirect_uri
   // matches what was registered with the OAuth server during dynamic client registration.
@@ -355,30 +450,40 @@ export async function createOAuthProvider(serverUrl: string, oauthConfig?: OAuth
       port = await findAvailablePort();
     }
   }
-  return new McpkitOAuthProvider(serverUrl, port, store, oauthConfig);
+  return new McpkitOAuthProvider(serverUrl, port, store, oauthConfig, interactive);
 }
 
 /**
- * A provider for callers that must never start an authorization (discovery
- * inside `call`, `exec`): it reuses the stored callback port without probing it
- * and writes nothing when it is built, so a busy port cannot cost the user a
- * stored client registration. Only already-stored tokens work; anything that
- * would need a browser throws `blockedMessage`.
+ * A provider for callers that must never start an authorization (batch commands, auto-refresh,
+ * `exec`, the runtime): it reuses the stored callback port without probing it and writes nothing
+ * when it is built, so a busy port cannot cost the user a stored client registration. Only
+ * already-stored tokens work; anything that would need a browser throws an OAuthRequiredError
+ * for `serverName`.
  */
 export async function createStoredOAuthProvider(
   serverUrl: string,
   oauthConfig: OAuthConfig | undefined,
-  blockedMessage: string,
+  serverName: string,
 ): Promise<McpkitOAuthProvider> {
   const store = await loadCredentials();
   // The redirect URL is only used to register a client or start an authorization, both
   // blocked here, so a missing stored port needs no real one.
   const port = oauthConfig?.callbackPort ?? store[serverUrl]?.callbackPort ?? 0;
-  return new McpkitOAuthProvider(serverUrl, port, store, oauthConfig, { blockedMessage });
+  return new McpkitOAuthProvider(serverUrl, port, store, oauthConfig, { nonInteractiveFor: serverName });
 }
 
-export async function authenticateIfNeeded(serverUrl: string, oauthConfig?: OAuthConfig): Promise<McpkitOAuthProvider> {
-  const provider = await createOAuthProvider(serverUrl, oauthConfig);
+/**
+ * The interactive sign-in: reuses valid stored tokens, otherwise runs the full flow, which opens the
+ * browser and waits for the callback. Only commands the user pointed at one server (`auth`, `install`,
+ * `call`, and `update`/`list`/`sync` with a name) call this; everything else uses a stored-credentials
+ * provider (see `createStoredOAuthProvider`).
+ */
+export async function authenticateIfNeeded(
+  serverUrl: string,
+  oauthConfig?: OAuthConfig,
+  interactive: InteractiveAuthOptions = {},
+): Promise<McpkitOAuthProvider> {
+  const provider = await createOAuthProvider(serverUrl, oauthConfig, interactive);
 
   // Skip the full OAuth dance if the access token is still valid
   if (provider.hasValidTokens()) {

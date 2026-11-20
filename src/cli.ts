@@ -14,6 +14,8 @@ import { createSearchCommand } from './commands/search.js';
 import { createDescribeCommand } from './commands/describe.js';
 import { createTypesCommand } from './commands/gen-types.js';
 import { createExecCommand, createSandboxWorkerCommand } from './commands/exec.js';
+import { createHookCommand } from './commands/hook.js';
+import { createConfigCommand } from './commands/config.js';
 
 const program = new Command()
   .name('mcpkit')
@@ -35,6 +37,8 @@ program.addCommand(createSearchCommand());
 program.addCommand(createDescribeCommand());
 program.addCommand(createTypesCommand());
 program.addCommand(createExecCommand());
+program.addCommand(createHookCommand());
+program.addCommand(createConfigCommand());
 program.addCommand(createSandboxWorkerCommand(), { hidden: true });
 
 program.parse();

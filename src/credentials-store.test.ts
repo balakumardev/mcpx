@@ -12,12 +12,13 @@ import {
   hasValidTokens,
 } from './auth.js';
 import { resolveAuthProvider } from './discover.js';
+import { OAuthRequiredError } from './oauth-required-error.js';
 import { runModuleScript, sourceUrl } from './test-utils.js';
 import type { TransportConfig } from './types.js';
 
 const SERVER_A = 'https://a.example.com/mcp';
 const SERVER_B = 'https://b.example.com/mcp';
-const BLOCKED = 'needs sign-in: run `mcpkit auth srv` first';
+const BLOCKED = 'srv needs sign-in. Run: mcpkit auth srv';
 
 function tokens(accessToken: string) {
   return { access_token: accessToken, token_type: 'bearer', refresh_token: `${accessToken}-refresh` };
@@ -158,7 +159,7 @@ describe('credentials store', () => {
       const readers: Array<() => Promise<unknown>> = [
         () => hasValidTokens(SERVER_A),
         () => createOAuthProvider(SERVER_A),
-        () => createStoredOAuthProvider(SERVER_A, undefined, BLOCKED),
+        () => createStoredOAuthProvider(SERVER_A, undefined, 'srv'),
         () => resolveAuthProvider({ name: 'srv', transport: { type: 'http', url: SERVER_A, auth: 'oauth' } }, { interactive: false }),
       ];
       for (const read of readers) {
@@ -220,7 +221,7 @@ describe('credentials store', () => {
       });
       const before = { bytes: await readFile(credentialsPath(), 'utf-8'), mtime: (await stat(credentialsPath())).mtimeMs };
 
-      const provider = await createStoredOAuthProvider(SERVER_A, undefined, BLOCKED);
+      const provider = await createStoredOAuthProvider(SERVER_A, undefined, 'srv');
 
       expect(provider.redirectUrl.port).toBe(String(busyPort));
       expect(provider.clientInformation()).toEqual({ client_id: 'registered' });
@@ -233,8 +234,8 @@ describe('credentials store', () => {
     it('prefers a configured callback port and needs no stored one', async () => {
       await writeStore({ [SERVER_A]: { tokens: tokens('a') } });
 
-      const configured = await createStoredOAuthProvider(SERVER_A, { callbackPort: 3118 }, BLOCKED);
-      const unset = await createStoredOAuthProvider(SERVER_A, undefined, BLOCKED);
+      const configured = await createStoredOAuthProvider(SERVER_A, { callbackPort: 3118 }, 'srv');
+      const unset = await createStoredOAuthProvider(SERVER_A, undefined, 'srv');
 
       expect(configured.redirectUrl.toString()).toBe('http://localhost:3118/callback');
       expect(unset.tokens()?.access_token).toBe('a');
@@ -243,11 +244,13 @@ describe('credentials store', () => {
     it('can never register a client, start an authorization or open a browser', async () => {
       await writeStore({ [SERVER_A]: { tokens: tokens('a') } });
       const before = await readFile(credentialsPath(), 'utf-8');
-      const provider = await createStoredOAuthProvider(SERVER_A, undefined, BLOCKED);
+      const provider = await createStoredOAuthProvider(SERVER_A, undefined, 'srv');
 
       await expect(provider.saveClientInformation({ client_id: 'new' })).rejects.toThrow(BLOCKED);
       await expect(provider.saveCodeVerifier('verifier')).rejects.toThrow(BLOCKED);
-      await expect(provider.redirectToAuthorization(new URL('https://auth.example.com/authorize'))).rejects.toThrow(BLOCKED);
+      const redirect = await provider.redirectToAuthorization(new URL('https://auth.example.com/authorize')).then(() => undefined, (err: unknown) => err);
+      expect(redirect).toBeInstanceOf(OAuthRequiredError);
+      expect((redirect as OAuthRequiredError).serverName).toBe('srv');
 
       expect(await readFile(credentialsPath(), 'utf-8')).toBe(before);
     });
@@ -257,7 +260,7 @@ describe('credentials store', () => {
         [SERVER_A]: { clientInfo: { client_id: 'registered' }, callbackPort: 9001, tokens: tokens('old') },
         [SERVER_B]: { tokens: tokens('b') },
       });
-      const provider = await createStoredOAuthProvider(SERVER_A, undefined, BLOCKED);
+      const provider = await createStoredOAuthProvider(SERVER_A, undefined, 'srv');
 
       await provider.saveTokens(tokens('refreshed'));
 
@@ -274,7 +277,7 @@ describe('credentials store', () => {
 
     it('fails fast and creates no credentials file when nothing is stored', async () => {
       await expect(resolveAuthProvider({ name: 'srv', transport: oauthHttp }, { interactive: false }))
-        .rejects.toThrow('run `mcpkit auth srv` first');
+        .rejects.toThrow(BLOCKED);
 
       expect(existsSync(credentialsPath())).toBe(false);
     });
@@ -283,7 +286,7 @@ describe('credentials store', () => {
       await writeStore({ [SERVER_A]: { clientInfo: { client_id: 'registered' }, callbackPort: 9001 } });
 
       await expect(resolveAuthProvider({ name: 'srv', transport: oauthHttp }, { interactive: false }))
-        .rejects.toThrow('run `mcpkit auth srv` first');
+        .rejects.toThrow(BLOCKED);
     });
 
     it('leaves the credentials file untouched when the stored port is busy', async () => {
@@ -297,7 +300,7 @@ describe('credentials store', () => {
 
       expect((await provider?.tokens())?.access_token).toBe('a');
       await expect(provider!.redirectToAuthorization(new URL('https://auth.example.com/authorize')))
-        .rejects.toThrow('run `mcpkit auth srv` first');
+        .rejects.toThrow(BLOCKED);
       expect(await readFile(credentialsPath(), 'utf-8')).toBe(before.bytes);
       expect((await stat(credentialsPath())).mtimeMs).toBe(before.mtime);
     });

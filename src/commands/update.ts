@@ -3,11 +3,13 @@ import chalk from 'chalk';
 import { getServer, listServers } from '../config.js';
 import { refreshServer } from '../auto-refresh.js';
 import { writeMetaSkill } from '../meta-skill.js';
+import { OAuthRequiredError } from '../oauth-required-error.js';
+import { scrubSecrets } from '../sandbox/redact.js';
 import type { AgentType, ServerEntry } from '../types.js';
 
-/** First line of an error message: stack-like detail from a transport would break the one-line-per-server report. */
-function summarizeFailure(err: unknown): string {
-  const message = err instanceof Error ? err.message : String(err);
+/** First line of an error message, without the server's credentials: stack-like detail from a transport would break the one-line-per-server report. */
+function summarizeFailure(entry: ServerEntry, err: unknown): string {
+  const message = scrubSecrets(entry, err instanceof Error ? err.message : String(err));
   return message.split('\n')[0].trim() || 'unknown error';
 }
 
@@ -19,6 +21,10 @@ export function createUpdateCommand(): Command {
 One server being unreachable does not stop the others: every server is tried, each gets one result
 line, and the exit code is 1 when any of them failed. A server that fails keeps the skill files,
 schema cache and registry entry it had.
+
+Without a name, update never opens a browser: an OAuth server that has no saved sign-in is skipped
+with a note to run \`mcpkit auth <server>\`. A skipped server is not a failure (it does not change the
+exit code). With a name, update may open the browser to sign in to that server.
 
 Examples:
   $ mcpkit update                Update all servers
@@ -38,16 +44,24 @@ Examples:
 
         const metaAgents = new Set<AgentType>();
         const failed: string[] = [];
+        const needSignIn: string[] = [];
         for (const entry of servers) {
           console.log(chalk.blue(`Updating ${entry.name}...`));
           try {
             // Discovery happens before anything is written, so a server that cannot be reached
             // leaves its skill files, schema cache and registry entry exactly as they were.
-            const { toolCount, agents } = await refreshServer(entry, { logPrefix: '  ', quiet: true });
+            // A named server is a request to work on that one, so it may sign in through the
+            // browser; updating all of them never does.
+            const { toolCount, agents } = await refreshServer(entry, { logPrefix: '  ', quiet: true, interactiveAuth: name !== undefined });
             console.log(chalk.green(`  ✓ ${entry.name}: ${toolCount} tool(s)`));
             for (const agent of agents) metaAgents.add(agent);
           } catch (err) {
-            console.error(chalk.red(`  ✗ ${entry.name}: ${summarizeFailure(err)}`));
+            if (err instanceof OAuthRequiredError) {
+              console.warn(chalk.yellow(`  ⚠ ${entry.name}: needs sign-in (mcpkit auth ${entry.name}); skipped`));
+              needSignIn.push(entry.name);
+              continue;
+            }
+            console.error(chalk.red(`  ✗ ${entry.name}: ${summarizeFailure(entry, err)}`));
             failed.push(entry.name);
           }
         }
@@ -57,11 +71,15 @@ Examples:
           await writeMetaSkill({ agents: [...metaAgents], scope: 'global', logPrefix: '  ' });
         }
 
+        const skippedNote = needSignIn.length > 0 ? `; ${needSignIn.length} skipped, needs sign-in: ${needSignIn.join(', ')}` : '';
+        const updated = servers.length - failed.length - needSignIn.length;
         if (failed.length === 0) {
-          console.log(chalk.green(`\n✓ Updated ${servers.length} server(s)`));
+          console.log(chalk.green(needSignIn.length === 0
+            ? `\n✓ Updated ${servers.length} server(s)`
+            : `\n✓ Updated ${updated} of ${servers.length} server(s)${skippedNote}`));
           return;
         }
-        console.error(chalk.red(`\nUpdated ${servers.length - failed.length} of ${servers.length} server(s); ${failed.length} failed: ${failed.join(', ')}`));
+        console.error(chalk.red(`\nUpdated ${updated} of ${servers.length} server(s); ${failed.length} failed: ${failed.join(', ')}${skippedNote}`));
         process.exit(1);
       } catch (err) {
         console.error(chalk.red(`Error: ${err instanceof Error ? err.message : err}`));

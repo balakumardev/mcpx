@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ServerEntry, TransportConfig } from '../types.js';
-import { redactMessage, secretValuesOf } from './redact.js';
+import { redactMessage, scrubSecrets, secretValuesOf } from './redact.js';
 
 function entryFor(transport: TransportConfig, extra: Partial<ServerEntry> = {}): ServerEntry {
   return {
@@ -198,5 +198,38 @@ describe('redactMessage: ordinary words in header and environment values', () =>
     const entry = httpEntry('https://host.example/mcp');
     entry.paramProvider = { command: 'mint', args: ['production', '--token=abcdefgh'] };
     expect(redactMessage(entry, 'ran mint production --token=abcdefgh')).toBe('ran mint <redacted> <redacted>');
+  });
+});
+
+describe('redactMessage: a credential in the launch arguments of a stdio server', () => {
+  const KEY = 'sk-LAUNCHcanary0123456789abcdef';
+  const launch = (...args: string[]): ServerEntry => entryFor({ type: 'stdio', command: 'npx', args });
+
+  it('hides an inline header, an --api-key option, and a URL user and password, as the arguments quote them', () => {
+    const entry = launch('mcp-remote', 'https://host.example/mcp', '--header', `x-api-key: ${KEY}`, '--api-key=OPTIONkey-9876543210', 'https://user:PASSword-abc123@h.example/x');
+    expect(redactMessage(entry, `spawn failed: npx mcp-remote https://host.example/mcp --header x-api-key: ${KEY}`))
+      .toBe('spawn failed: npx mcp-remote https://host.example/mcp --header x-api-key: <redacted>');
+    expect(redactMessage(entry, 'bad --api-key=OPTIONkey-9876543210')).toBe('bad --api-key=<redacted>');
+    expect(redactMessage(entry, 'GET https://user:PASSword-abc123@h.example/x')).toBe('GET https://<redacted>@h.example/x');
+  });
+
+  it('hides the header of the whitespace-split form', () => {
+    const entry = launch('--header', '"x-api-key:', `${KEY}"`);
+    expect(redactMessage(entry, `header "x-api-key: ${KEY}" rejected`)).toBe('header "x-api-key: <redacted>" rejected');
+  });
+
+  it('leaves the ordinary arguments alone', () => {
+    const entry = launch('-y', '@modelcontextprotocol/server-filesystem@2025.1.14', '/Users/someone/project');
+    expect(secretValuesOf(entry)).toEqual([]);
+  });
+});
+
+describe('scrubSecrets', () => {
+  it('hides credentials like redactMessage but keeps the env hints: the owner needs the recipe', () => {
+    const entry = httpEntry('https://host.example/mcp', { 'X-Api-Key': 'HEADERkey-0123456789' });
+    entry.envHints = { MY_TOKEN: 'Mint one with `mint-token`.' };
+    const message = 'x-api-key HEADERkey-0123456789 rejected\n\nHint: Mint one with `mint-token`.';
+    expect(scrubSecrets(entry, message)).toBe('x-api-key <redacted> rejected\n\nHint: Mint one with `mint-token`.');
+    expect(redactMessage(entry, message)).toBe('x-api-key <redacted> rejected');
   });
 });

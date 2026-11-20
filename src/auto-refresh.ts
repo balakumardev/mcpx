@@ -6,6 +6,7 @@ import { trySaveSchemaCache } from './schema-store.js';
 import { loadAgentSettings, resolveServerAgents } from './agent-config.js';
 import { reconcileSkillFiles } from './skill-sync.js';
 import { updateServer } from './config.js';
+import { scrubSecrets } from './sandbox/redact.js';
 
 /** Reference point for staleness: last discovery time, falling back to updatedAt. */
 function lastDiscoveryTime(entry: ServerEntry): number {
@@ -39,13 +40,14 @@ function humanizeAge(seconds: number): string {
  * Re-discover tools and regenerate skill files for a server, then persist the
  * updated snapshot and the tool schema cache. Shared by `mcpkit update` and
  * auto-refresh. Throws on discovery failure so callers can decide whether to
- * surface or swallow it. `interactiveAuth: false` never opens an OAuth browser.
+ * surface or swallow it. Unless `interactiveAuth` is set it never opens an OAuth browser: a server
+ * that needs sign-in throws an OAuthRequiredError.
  */
 export async function refreshServer(
   entry: ServerEntry,
   opts: { logPrefix?: string; quiet?: boolean; interactiveAuth?: boolean } = {},
 ): Promise<{ toolCount: number; agents: AgentType[] }> {
-  const { logPrefix = '', quiet = false, interactiveAuth = true } = opts;
+  const { logPrefix = '', quiet = false, interactiveAuth = false } = opts;
   const settings = await loadAgentSettings();
 
   const { tools, serverMeta } = await discoverForEntry(entry, { interactiveAuth });
@@ -128,7 +130,7 @@ export async function maybeAutoRefresh(entry: ServerEntry): Promise<void> {
   } catch (err) {
     // Never let a refresh failure break the actual call.
     console.error(chalk.dim(
-      `⚠ auto-refresh for "${entry.name}" failed (${err instanceof Error ? err.message : err}); using cached skill.`,
+      `⚠ auto-refresh for "${entry.name}" failed (${scrubSecrets(entry, err instanceof Error ? err.message : String(err))}); using cached skill.`,
     ));
   }
 }

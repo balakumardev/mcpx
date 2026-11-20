@@ -246,4 +246,52 @@ describe('install', () => {
       expect((await getServer('demo'))?.transport).toMatchObject({ env: { API_KEY: 'one' } });
     });
   });
+
+  describe('when the server cannot be reached', () => {
+    const SECRET_ENV = 'sk-env-secret-0123456789';
+    const SECRET_HEADER = 'sk-header-secret-9876543210';
+    const SECRET_QUERY = 'sk-query-secret-abcdef123456';
+    const SECRET_PROVIDER = 'sk-provider-secret-fedcba654321';
+
+    it('does not print the credentials of a stdio server that the failure message quotes', async () => {
+      vi.mocked(discoverForEntry).mockRejectedValue(new Error(`spawn failed: API_KEY=${SECRET_ENV} was rejected`));
+
+      await install('node ./server.js', '-n', 'demo', '-e', `API_KEY=${SECRET_ENV}`);
+
+      expect(exitSpy).toHaveBeenCalledWith(1);
+      expect(stderr()).toContain('spawn failed');
+      expect(stderr()).not.toContain(SECRET_ENV);
+      expect(stderr()).toContain('<redacted>');
+    });
+
+    it('does not print a header value, nor the query string, of a remote server', async () => {
+      vi.mocked(discoverForEntry).mockRejectedValue(
+        new Error(`401 from https://example.com/mcp?token=${SECRET_QUERY} (Authorization: Bearer ${SECRET_HEADER})`),
+      );
+
+      await install(`https://example.com/mcp?token=${SECRET_QUERY}`, '-n', 'web', '--header', `Authorization: Bearer ${SECRET_HEADER}`);
+
+      expect(exitSpy).toHaveBeenCalledWith(1);
+      expect(stderr()).toContain('401 from https://example.com/mcp');
+      expect(stderr()).not.toContain(SECRET_QUERY);
+      expect(stderr()).not.toContain(SECRET_HEADER);
+    });
+
+    it('does not print an argument of the param provider the failure quotes', async () => {
+      vi.mocked(discoverForEntry).mockRejectedValue(new Error(`provider failed: --api-key=${SECRET_PROVIDER}`));
+
+      await install('node ./server.js', '-n', 'demo', '--param-provider', `get-token --api-key=${SECRET_PROVIDER}`);
+
+      expect(stderr()).not.toContain(SECRET_PROVIDER);
+    });
+
+    it('prints an error that carries no credential unchanged', async () => {
+      vi.mocked(discoverForEntry).mockRejectedValue(new Error('connection refused'));
+
+      await install('node ./server.js', '-n', 'demo', '-e', `API_KEY=${SECRET_ENV}`);
+
+      expect(stderr()).toContain('Error: connection refused');
+      expect(await getServer('demo')).toBeUndefined();
+    });
+  });
 });

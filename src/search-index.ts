@@ -123,7 +123,7 @@ interface Doc {
   flatQualified: string[];
 }
 
-const compareText = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+export const compareText = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
 /** `value` with the keys of every object in sorted order, so equal schemas written in a different key order agree. */
 function canonical(value: unknown): unknown {
@@ -135,7 +135,7 @@ function canonical(value: unknown): unknown {
 }
 
 /** Group the tools that are one tool on several servers: same name, description and input schema. */
-function groupTwins(entries: IndexedTool[]): IndexedTool[][] {
+export function groupTwins(entries: IndexedTool[]): IndexedTool[][] {
   const sorted = [...entries].sort((a, b) => compareText(a.server, b.server) || compareText(a.tool.name, b.tool.name));
   const byDescription = new Map<string, IndexedTool[]>();
   for (const entry of sorted) {

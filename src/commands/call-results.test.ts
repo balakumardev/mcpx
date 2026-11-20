@@ -494,5 +494,47 @@ describe('call results and exit status', () => {
       expect(stderrText()).toContain('Error: connection refused');
       expect(exit).toHaveBeenCalledWith(1);
     });
+
+    it('never quote the credentials of the server: a header, a URL key or a launch argument', async () => {
+      const remote = entry({
+        transport: { type: 'http', url: 'https://host.example/mcp?api_key=URLKEY-0123456789', headers: { 'X-Api-Key': 'HEADERKEY-abcdef0123' } },
+      });
+      mocks.callTool.mockRejectedValue(new Error('POST https://host.example/mcp?api_key=URLKEY-0123456789 failed: x-api-key HEADERKEY-abcdef0123 rejected'));
+
+      await runCall(['srv', 'tool', '{}'], remote);
+
+      expect(stderrText()).toBe('Error: POST https://host.example/mcp<redacted> failed: x-api-key <redacted> rejected');
+      expect(exit).toHaveBeenCalledWith(1);
+    });
+
+    it('never quote a credential written into the launch arguments of a stdio server', async () => {
+      const local = entry({
+        transport: { type: 'stdio', command: 'npx', args: ['mcp-remote', 'https://host.example/mcp', '--header', 'x-api-key: LAUNCHKEY-0123456789'] },
+      });
+      mocks.callTool.mockRejectedValue(new Error('spawn failed: npx mcp-remote https://host.example/mcp --header x-api-key: LAUNCHKEY-0123456789'));
+
+      await runCall(['srv', 'tool', '{}'], local);
+
+      expect(stderrText()).not.toContain('LAUNCHKEY');
+      expect(stderrText()).toContain('--header x-api-key: <redacted>');
+    });
+
+    it('leave what a tool says alone: a tool error is the tool result, like its output', async () => {
+      const configured = entry({ transport: { type: 'stdio', command: 'node', args: ['server.js'], env: { BASE_URL: 'https://api.example.com/v1' } } });
+      mocks.callTool.mockResolvedValue(failure('GET https://api.example.com/v1/items returned 404'));
+
+      await runCall(['srv', 'tool', '{}'], configured);
+
+      expect(stderrText()).toBe('Error: Tool "tool" returned an error: GET https://api.example.com/v1/items returned 404');
+    });
+
+    it('keep the env hint of a missing variable: the recipe is what the message is for', async () => {
+      const hinted = entry({ envHints: { MY_TOKEN: 'Mint one with `mint-token`.' } });
+      mocks.callTool.mockRejectedValue(new Error('Environment variable "MY_TOKEN" is not set.\n\nHint: Mint one with `mint-token`.'));
+
+      await runCall(['srv', 'tool', '{}'], hinted);
+
+      expect(stderrText()).toContain('Hint: Mint one with `mint-token`.');
+    });
   });
 });

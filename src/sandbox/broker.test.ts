@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ToolCallOutput } from '../client.js';
 import type { SchemaCache } from '../schema-store.js';
 import type { ServerEntry, ToolInfo } from '../types.js';
+import { OAuthRequiredError } from '../oauth-required-error.js';
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import {
   BrokerError,
@@ -181,7 +182,7 @@ describe('CallBroker: servers', () => {
 
   it('shrugs off a session that failed to open when closing', async () => {
     const failing = rig({ policy: { allowWrites: true } });
-    failing.openSession.mockRejectedValueOnce(new Error('"fx" needs OAuth sign-in: run `mcpkit auth fx` first'));
+    failing.openSession.mockRejectedValueOnce(new OAuthRequiredError('fx'));
     const error = await failure(failing.broker.call('fx', 't', '{}'));
     expect(error.message).toContain('mcpkit auth fx');
     expect(error.kind).toBe('tool');

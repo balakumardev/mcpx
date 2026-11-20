@@ -1,4 +1,5 @@
 import { resolveEnvVars } from '../client.js';
+import { secretsInCommand } from '../redact-config.js';
 import type { ServerEntry } from '../types.js';
 
 /**
@@ -117,6 +118,8 @@ export function secretValuesOf(entry: ServerEntry): string[] {
 
   if (transport.type === 'stdio') {
     for (const [name, value] of Object.entries(transport.env ?? {})) addConfigured(name, value);
+    // A credential written into the launch command (`--header "x-api-key: <KEY>"`, `--api-key=<KEY>`, a URL with a user and password).
+    for (const secret of secretsInCommand(transport.command, transport.args)) addPositional(secret);
   } else {
     for (const [name, value] of Object.entries(transport.headers ?? {})) addConfigured(name, value);
     try {
@@ -143,6 +146,17 @@ export function redactMessage(entry: ServerEntry, message: string): string {
   for (const hint of Object.values(entry.envHints ?? {})) {
     if (hint !== '') cleaned = cleaned.split(`\n\nHint: ${hint}`).join('').split(hint).join(REDACTED);
   }
+  return scrubSecrets(entry, cleaned);
+}
+
+/**
+ * `message` with the entry's credentials and the connection URL's secrets removed, the env hints
+ * kept. For the owner's own commands (`call`, `sync`, `update`): a hint is the recipe an
+ * "environment variable is not set" message is meant to carry, while a transport error that
+ * quotes a header, a URL or a launch argument must not reach a terminal or a transcript.
+ */
+export function scrubSecrets(entry: ServerEntry, message: string): string {
+  let cleaned = message;
   const positional = positionalSecretsOf(entry);
   for (const userinfo of [...new Set(positional.userinfo)].sort((a, b) => b.length - a.length)) {
     cleaned = cleaned.split(userinfo).join(`${REDACTED}@`);

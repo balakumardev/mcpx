@@ -98,4 +98,19 @@ describe('sync that overlaps other commands', () => {
     expect(await getServer('srv')).toBeUndefined();
     expect(await loadSchemaCache('srv')).toBeNull();
   });
+
+  it('does not print a credential of the server in the warning for a server it could not reach', async () => {
+    await addServer({
+      ...makeEntry(),
+      name: 'keyed',
+      transport: { type: 'stdio', command: 'node', args: ['server.js'], env: { API_TOKEN: 'ENVtoken-0123456789' } },
+    });
+    vi.mocked(discoverForEntry).mockRejectedValue(new Error('auth failed for token ENVtoken-0123456789'));
+
+    await createSyncCommand().parseAsync(['keyed', '--force'], { from: 'user' });
+
+    const warnings = vi.mocked(console.warn).mock.calls.map((call) => call.map(String).join(' ')).join('\n');
+    expect(warnings).toContain('keyed: auth failed for token <redacted>');
+    expect(warnings).not.toContain('ENVtoken');
+  });
 });

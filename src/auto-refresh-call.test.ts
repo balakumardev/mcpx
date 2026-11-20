@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MockInstance } from 'vitest';
-import { exec } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -27,7 +27,7 @@ vi.mock('./auth.js', async (importOriginal) => ({
 
 vi.mock('node:child_process', async (importOriginal) => ({
   ...(await importOriginal<typeof import('node:child_process')>()),
-  exec: vi.fn(),
+  execFile: vi.fn(),
 }));
 
 const MCP_URL = 'https://mcp.example.com/mcp';
@@ -90,9 +90,9 @@ describe('auto-refresh inside call', () => {
     await maybeAutoRefresh(staleEntry());
 
     expect(authenticateIfNeeded).not.toHaveBeenCalled();
-    expect(exec).not.toHaveBeenCalled();
+    expect(execFile).not.toHaveBeenCalled();
     expect(discoverTools).not.toHaveBeenCalled();
-    expect(stderrText()).toContain('run `mcpkit auth srv` first');
+    expect(stderrText()).toContain('srv needs sign-in. Run: mcpkit auth srv');
     expect(stderrText()).toContain('using cached skill');
   });
 
@@ -104,13 +104,13 @@ describe('auto-refresh inside call', () => {
     await maybeAutoRefresh(entry);
 
     expect(authenticateIfNeeded).not.toHaveBeenCalled();
-    expect(exec).not.toHaveBeenCalled();
+    expect(execFile).not.toHaveBeenCalled();
     expect(discoverTools).toHaveBeenCalledTimes(1);
     const provider = vi.mocked(discoverTools).mock.calls[0][1];
     expect((await provider?.tokens())?.access_token).toBe('stored');
     await expect(provider!.redirectToAuthorization(new URL('https://auth.example.com/authorize')))
-      .rejects.toThrow('run `mcpkit auth srv` first');
-    expect(exec).not.toHaveBeenCalled();
+      .rejects.toThrow('srv needs sign-in. Run: mcpkit auth srv');
+    expect(execFile).not.toHaveBeenCalled();
     expect((await getServer('srv'))?.toolCount).toBe(1);
     expect(stderrText()).toContain('refreshed "srv"');
   });
@@ -123,6 +123,18 @@ describe('auto-refresh inside call', () => {
 
     expect(stderrText()).toContain('server unreachable');
     expect(stderrText()).toContain('using cached skill');
+  });
+
+  it('does not print a credential of the server that the failure quotes', async () => {
+    vi.mocked(discoverTools).mockRejectedValue(new Error('POST rejected x-api-key HEADERkey-0123456789'));
+    const entry = staleEntry({
+      transport: { type: 'http', url: MCP_URL, headers: { 'X-Api-Key': 'HEADERkey-0123456789' } },
+    });
+
+    await maybeAutoRefresh(entry);
+
+    expect(stderrText()).toContain('POST rejected x-api-key <redacted>');
+    expect(stderrText()).not.toContain('HEADERkey');
   });
 
   it('leaves servers that do not use OAuth on the plain path', async () => {

@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { createUpdateCommand } from './commands/update.js';
 import { addServer, getServer } from './config.js';
 import { discoverForEntry } from './discover.js';
+import { OAuthRequiredError } from './oauth-required-error.js';
 import { loadSchemaCache, saveSchemaCache, schemaCachePath } from './schema-store.js';
 import type { ServerEntry, ToolInfo } from './types.js';
 
@@ -37,11 +38,13 @@ describe('update', () => {
   let homeDir = '';
   let logSpy: MockInstance<typeof console.log>;
   let errorSpy: MockInstance<typeof console.error>;
+  let warnSpy: MockInstance<typeof console.warn>;
   let exitSpy: MockInstance<typeof process.exit>;
 
   const skillFile = (name: string) => join(homeDir, '.claude', 'skills', `mcpkit-${name}`, 'SKILL.md');
   const stdout = () => logSpy.mock.calls.map((call) => call.map(String).join(' ')).join('\n');
   const stderr = () => errorSpy.mock.calls.map((call) => call.map(String).join(' ')).join('\n');
+  const warnings = () => warnSpy.mock.calls.map((call) => call.map(String).join(' ')).join('\n');
   const update = (...args: string[]) => createUpdateCommand().parseAsync(args, { from: 'user' });
 
   /** The servers named in `unreachable` fail to connect; every other one answers with NEW_TOOLS. */
@@ -64,7 +67,7 @@ describe('update', () => {
     homeDir = await mkdtemp(join(tmpdir(), 'mcpkit-update-'));
     process.env.HOME = homeDir;
     logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
   });
@@ -125,6 +128,19 @@ describe('update', () => {
       expect(exitSpy).toHaveBeenCalledWith(1);
     });
 
+    it('does not print a credential of the server that the failure quotes', async () => {
+      await addServer({
+        ...makeEntry('keyed'),
+        transport: { type: 'http', url: 'https://host.example/mcp', headers: { 'X-Api-Key': 'HEADERkey-0123456789' } },
+      });
+      vi.mocked(discoverForEntry).mockRejectedValue(new Error('POST /mcp rejected x-api-key HEADERkey-0123456789'));
+
+      await update('keyed');
+
+      expect(stderr()).toContain('✗ keyed: POST /mcp rejected x-api-key <redacted>');
+      expect(stderr()).not.toContain('HEADERkey');
+    });
+
     it('lists every failure when several servers are down, in the order they were tried', async () => {
       serversDown('dead', 'third');
 
@@ -157,6 +173,89 @@ describe('update', () => {
       expect(stdout()).toMatch(/✓ two: 2 tool\(s\)/);
       expect(stdout()).toMatch(/✓ Updated 2 server\(s\)/);
       expect(stderr()).toBe('');
+      expect(exitSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('a server that needs OAuth sign-in', () => {
+    /** The servers named in `needSignIn` throw what a connection without usable tokens throws; the rest answer. */
+    function signInNeeded(...needSignIn: string[]): void {
+      vi.mocked(discoverForEntry).mockImplementation(async (entry) => {
+        if (needSignIn.includes(entry.name)) throw new OAuthRequiredError(entry.name);
+        return { tools: NEW_TOOLS, serverMeta: {} };
+      });
+    }
+
+    it('without a name never signs in: every server is discovered non-interactively', async () => {
+      for (const name of ['one', 'two']) await registerWithOldFiles(name);
+      signInNeeded();
+
+      await update();
+
+      expect(vi.mocked(discoverForEntry).mock.calls.map(([, opts]) => opts)).toEqual([
+        { interactiveAuth: false },
+        { interactiveAuth: false },
+      ]);
+    });
+
+    it('with a name may sign in, because the user asked for that one server', async () => {
+      await registerWithOldFiles('one');
+      signInNeeded();
+
+      await update('one');
+
+      expect(vi.mocked(discoverForEntry).mock.calls.map(([, opts]) => opts)).toEqual([{ interactiveAuth: true }]);
+    });
+
+    it('is skipped with one line and no stack, the later servers are still updated, and the exit code stays 0', async () => {
+      for (const name of ['first', 'needs-login', 'last']) await registerWithOldFiles(name);
+      signInNeeded('needs-login');
+
+      await update();
+
+      expect(warnings()).toBe('  ⚠ needs-login: needs sign-in (mcpkit auth needs-login); skipped');
+      expect(stderr()).not.toContain('needs-login');
+      for (const name of ['first', 'last']) {
+        expect(stdout(), name).toMatch(new RegExp(`✓ ${name}: 2 tool\\(s\\)`));
+        expect(await readFile(skillFile(name), 'utf-8'), name).toContain('new_one');
+      }
+      expect(stdout()).toContain('✓ Updated 2 of 3 server(s); 1 skipped, needs sign-in: needs-login');
+      expect(exitSpy).not.toHaveBeenCalled();
+    });
+
+    it('keeps the skill files, schema cache and registry entry it had', async () => {
+      await registerWithOldFiles('needs-login');
+      const entryBefore = await getServer('needs-login');
+      signInNeeded('needs-login');
+
+      await update();
+
+      expect(await readFile(skillFile('needs-login'), 'utf-8')).toBe('old skill of needs-login');
+      expect((await loadSchemaCache('needs-login'))?.tools).toEqual(OLD_TOOLS);
+      expect(await getServer('needs-login')).toEqual(entryBefore);
+    });
+
+    it('does not hide a real failure: the exit code is 1 and the summary counts both', async () => {
+      for (const name of ['needs-login', 'dead', 'fine']) await registerWithOldFiles(name);
+      vi.mocked(discoverForEntry).mockImplementation(async (entry) => {
+        if (entry.name === 'needs-login') throw new OAuthRequiredError(entry.name);
+        if (entry.name === 'dead') throw new Error('connect ECONNREFUSED');
+        return { tools: NEW_TOOLS, serverMeta: {} };
+      });
+
+      await update();
+
+      expect(stderr()).toContain('Updated 1 of 3 server(s); 1 failed: dead; 1 skipped, needs sign-in: needs-login');
+      expect(exitSpy).toHaveBeenCalledWith(1);
+    });
+
+    it('when it is the only server, nothing is updated and the exit code is still 0', async () => {
+      await registerWithOldFiles('needs-login');
+      signInNeeded('needs-login');
+
+      await update();
+
+      expect(stdout()).toContain('✓ Updated 0 of 1 server(s); 1 skipped, needs sign-in: needs-login');
       expect(exitSpy).not.toHaveBeenCalled();
     });
   });

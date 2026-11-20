@@ -16,6 +16,7 @@ import { detectAgents } from '../generators/index.js';
 import { buildRuntimeConfig } from '../runtime-config.js';
 import { reconcileSkillFiles } from '../skill-sync.js';
 import { writeMetaSkill } from '../meta-skill.js';
+import { scrubSecrets } from '../sandbox/redact.js';
 import { quoteName, serverNameError } from '../server-name.js';
 import { ALL_AGENTS } from '../types.js';
 import type {
@@ -354,7 +355,23 @@ async function installServer(
   // Discover tools and server metadata (authenticating first when the server uses OAuth).
   // envHints isn't relevant here yet (no entry exists), but a future caller could
   // thread CLI-supplied hints through if needed.
-  const { tools, serverMeta } = await discoverForEntry({ name, transport }, { interactiveAuth: true });
+  let discovered: Awaited<ReturnType<typeof discoverForEntry>>;
+  try {
+    discovered = await discoverForEntry({ name, transport }, { interactiveAuth: true });
+  } catch (err) {
+    // What the server (or the transport) says may quote the credentials this install was given.
+    const given: ServerEntry = {
+      name,
+      transport,
+      ...(opts.paramProvider ? { paramProvider: { command: opts.paramProvider } } : {}),
+      toolCount: 0,
+      agents: [],
+      createdAt: '',
+      updatedAt: '',
+    };
+    throw new Error(scrubSecrets(given, err instanceof Error ? err.message : String(err)));
+  }
+  const { tools, serverMeta } = discovered;
   console.log(chalk.green(`Found ${tools.length} tool(s)${serverMeta.name ? ` on "${serverMeta.name}"` : ''}:`));
   for (const tool of tools) {
     console.log(`  ${chalk.bold(tool.name)} — ${tool.description || '(no description)'}`);

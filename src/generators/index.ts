@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs';
 import type { AgentType, GeneratorContext, GeneratedSkill, ToolInfo, ServerRuntimeConfig } from '../types.js';
 import { DEFAULT_RUNTIME_IDLE_TIMEOUT_SEC, DEFAULT_RUNTIME_CALL_TIMEOUT_SEC } from '../types.js';
 import { buildCallExample, buildExampleArgs, callLine, shellQuote } from '../codegen/example-args.js';
+import { maskText } from '../redact-config.js';
 import { escapeControlChars, firstSentence } from '../search-index.js';
 import { skillDirName } from '../server-name.js';
 
@@ -396,7 +397,7 @@ function buildFullSkillContent(ctx: GeneratorContext): string {
   if (ctx.paramProvider) {
     lines.push('### Auto-injected parameters');
     lines.push('');
-    lines.push(`This server has a param provider configured (\`${ctx.paramProvider.command}\`) that automatically injects parameters (e.g., auth credentials) into every tool call. You do **not** need to pass these params manually.`);
+    lines.push(`This server has a param provider configured (\`${maskText(ctx.paramProvider.command)}\`) that automatically injects parameters (e.g., auth credentials) into every tool call. You do **not** need to pass these params manually.`);
     lines.push('');
   }
 
@@ -542,7 +543,7 @@ function buildCompactSkillContent(ctx: GeneratorContext): string {
 
   if (ctx.paramProvider) {
     lines.push(
-      `Parameters from the param provider (\`${ctx.paramProvider.command}\`) are injected into every call automatically; do not pass them yourself.`,
+      `Parameters from the param provider (\`${maskText(ctx.paramProvider.command)}\`) are injected into every call automatically; do not pass them yourself.`,
       '',
     );
   }

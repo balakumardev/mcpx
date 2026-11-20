@@ -1,5 +1,7 @@
 import chalk from 'chalk';
 import { getGenerator } from './generators/index.js';
+import { assertServerName } from './server-name.js';
+import { perServerAgents } from './settings.js';
 import { removeSkillDirectory, stageSkillFile } from './skill-file.js';
 import type { StagedSkillFile } from './skill-file.js';
 import type { AgentType, GeneratedSkill, GeneratorContext } from './types.js';
@@ -13,6 +15,9 @@ export interface ReconcileSkillFilesOptions {
   /** Suppress progress logging (used by background auto-refresh so it never writes to stdout). */
   quiet?: boolean;
 }
+
+/** Said where an agent gets no per-server skill because its mode is `guide`. */
+const SKIPPED_NOTE = 'no per-server skill (skills mode: guide, see `mcpkit config`)';
 
 /** The skill of one agent, generated and not yet written. */
 interface PlannedSkill {
@@ -60,14 +65,28 @@ async function writeAllOrNone(planned: PlannedSkill[]): Promise<void> {
   }
 }
 
+/**
+ * Make the skill files of one server match `nextAgents`: write the skill of each, and remove the
+ * skill of every agent in `previousAgents` that is not in `nextAgents`.
+ *
+ * Agents whose skills mode is `guide` (`mcpkit config skills`) get no per-server skill: they are
+ * left out of the writes, and they still count as targeted, so a skill that exists for one of them is
+ * neither rewritten nor removed here. Removing the skills of an agent that moves to the guide is the
+ * job of `mcpkit config skills guide`, which backs them up first. The mode governs global skills
+ * only: a project-scope skill was asked for explicitly and is always written.
+ */
 export async function reconcileSkillFiles(options: ReconcileSkillFilesOptions): Promise<void> {
   const { ctx, nextAgents, previousAgents = [], dryRun = false, logPrefix = '', quiet = false } = options;
   const previousSet = new Set(previousAgents);
   const nextSet = new Set(nextAgents);
 
-  // Generating also checks the server name, so a bad one throws before anything is written.
+  const writtenAgents = await perServerAgents(nextAgents, ctx.scope);
+  const skippedAgents = nextAgents.filter((agent) => !writtenAgents.includes(agent));
+
+  // A bad server name throws before anything is written, also when every agent is in guide mode and nothing is generated.
+  assertServerName(ctx.serverName);
   const planned: PlannedSkill[] = [];
-  for (const agent of nextAgents) {
+  for (const agent of writtenAgents) {
     const generate = await getGenerator(agent);
     planned.push({ agent, skill: generate(ctx) });
   }
@@ -78,10 +97,12 @@ export async function reconcileSkillFiles(options: ReconcileSkillFilesOptions): 
       console.log(chalk.dim(skill.content.slice(0, 200) + '...'));
       console.log();
     }
+    for (const agent of skippedAgents) console.log(chalk.yellow(`${logPrefix}[dry-run] ${agent}: ${SKIPPED_NOTE}`));
   } else {
     await writeAllOrNone(planned);
     if (!quiet) {
       for (const { agent, skill } of planned) console.log(chalk.green(`${logPrefix}✓ ${agent}: ${skill.filePath}`));
+      for (const agent of skippedAgents) console.log(chalk.dim(`${logPrefix}- ${agent}: ${SKIPPED_NOTE}`));
     }
   }
 

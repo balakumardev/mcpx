@@ -56,6 +56,15 @@ describe('meta-skill', () => {
     expect(content).toContain('**Exit codes:** `0` on success. `1` when');
   });
 
+  it('mentions the SessionStart hook as the way to list servers without per-server skills', async () => {
+    const { buildMetaSkillContent } = await import('./meta-skill.js');
+    const content = buildMetaSkillContent();
+
+    expect(content).toContain('mcpkit hook install');
+    expect(content).toContain('mcpkit hook session-start');
+    expect(content).toContain('without per-server skills');
+  });
+
   it('documents exec: the write gate with its three flags, the limits, the envelope and the exit codes', async () => {
     const { buildMetaSkillContent } = await import('./meta-skill.js');
     const content = buildMetaSkillContent();
@@ -107,6 +116,14 @@ describe('meta-skill', () => {
     expect(content).toContain('replaces the whole entry; a warning on stderr names the settings the new install does not carry over');
     expect(content).toContain('`update` tries every server: one that cannot be reached keeps its skill files, schema cache and registry entry, and the exit code is 1 if any failed');
     expect(content).toContain('is skipped with a warning and stays in the file');
+  });
+
+  it('says how an agent learns about the servers when it has no per-server skills', async () => {
+    const { buildMetaSkillContent } = await import('./meta-skill.js');
+    const content = buildMetaSkillContent();
+
+    expect(content).toContain('With `mcpkit config skills guide` an agent gets only this guide and no per-server skills');
+    expect(content).toContain('the session-start directory above or `mcpkit list`');
   });
 
   it('documents the behaviours that surprise a script: auto-refresh without a browser, the list cache refresh, update after edit and corrupt files', async () => {

@@ -2,6 +2,7 @@ import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.
 import { authenticateIfNeeded, createStoredOAuthProvider } from './auth.js';
 import { discoverTools } from './client.js';
 import type { DiscoveryResult } from './client.js';
+import { OAuthRequiredError } from './oauth-required-error.js';
 import { loadSchemaCache, trySaveSchemaCache } from './schema-store.js';
 import type { ServerEntry, ToolInfo } from './types.js';
 
@@ -11,11 +12,12 @@ export type DiscoverableEntry = Pick<ServerEntry, 'name' | 'transport' | 'envHin
 /**
  * The OAuth provider for an entry, or undefined when it does not use OAuth.
  *
- * interactive: run the full flow (may open a browser and wait for the callback).
- * non-interactive: use stored credentials only. The provider is built without
- * touching the credentials file, it throws when there are no tokens, and it can
- * never register a client or open a browser, so an expired session that cannot
- * be refreshed fails fast instead.
+ * interactive: run the full flow (may open a browser and wait for the callback). Only for a command
+ * the user pointed at one server.
+ * non-interactive: use stored credentials only. The provider is built without touching the
+ * credentials file, and it can never register a client, open a browser or listen on a port. With no
+ * tokens it throws an OAuthRequiredError at once, before any request is made; an expired session that
+ * cannot be refreshed throws the same error from the connection.
  */
 export async function resolveAuthProvider(
   entry: DiscoverableEntry,
@@ -29,10 +31,9 @@ export async function resolveAuthProvider(
     return authenticateIfNeeded(transport.url, transport.oauth);
   }
 
-  const authRequired = `"${entry.name}" needs OAuth sign-in: run \`mcpkit auth ${entry.name}\` first`;
-  const provider = await createStoredOAuthProvider(transport.url, transport.oauth, authRequired);
+  const provider = await createStoredOAuthProvider(transport.url, transport.oauth, entry.name);
   if (!provider.tokens()?.access_token) {
-    throw new Error(authRequired);
+    throw new OAuthRequiredError(entry.name);
   }
   return provider;
 }

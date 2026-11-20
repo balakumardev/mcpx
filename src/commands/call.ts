@@ -7,7 +7,9 @@ import { authenticateIfNeeded } from '../auth.js';
 import { isPersistentRuntimeEntry } from '../runtime-config.js';
 import { callPersistentRuntime } from '../runtime-manager.js';
 import { maybeAutoRefresh } from '../auto-refresh.js';
+import { scrubSecrets } from '../sandbox/redact.js';
 import { escapeControlChars } from '../search-index.js';
+import type { ServerEntry } from '../types.js';
 
 const KEEPALIVE_SIGNALS = ['SIGINT', 'SIGTERM'] as const;
 
@@ -16,6 +18,9 @@ type StderrWriter = Pick<NodeJS.WriteStream, 'write'>;
 
 /** The command line is wrong (exit status 2), as opposed to the server or the tool failing (exit status 1). */
 class UsageError extends Error {}
+
+/** The tool ran and reported an error. Its text is the tool's result, printed as the server sent it. */
+class ToolError extends Error {}
 
 const PARAMS_USAGE = `Usage: mcpkit call <server> <tool> '{"key":"value"}'`;
 const CHAIN_USAGE = `Usage: --chain 'tool:{"key":"value"}'`;
@@ -75,7 +80,7 @@ function toolFailureMessage(calls: ToolCall[], outputs: ToolCallOutput[]): strin
  */
 function writeResults(calls: ToolCall[], outputs: ToolCallOutput[], json: boolean): void {
   const failure = toolFailureMessage(calls, outputs);
-  if (failure) throw new Error(failure);
+  if (failure) throw new ToolError(failure);
 
   const isChained = calls.length > 1;
   if (json) {
@@ -189,6 +194,8 @@ Persistent stdio session (leaves the local MCP server process running until Ctrl
   $prev.field references are substituted with values from the previous call's JSON output.
   Non-JSON output is available as $prev._text.`)
     .action(async (server: string, tool: string, paramsStr: string, opts: { chain?: string[]; keepalive?: boolean; json?: boolean }) => {
+      // The registered server once it is known, so that an error never quotes its credentials.
+      let registered: ServerEntry | undefined;
       try {
         // Everything wrong with the command line is found before any server is contacted.
         const params = parseParamsObject(paramsStr, 'Params', PARAMS_USAGE);
@@ -201,6 +208,7 @@ Persistent stdio session (leaves the local MCP server process running until Ctrl
           console.error(chalk.red(`Server "${server}" not found. Run 'mcpkit list' to see registered servers.`));
           process.exit(1);
         }
+        registered = entry;
 
         // For dynamic servers: refresh the skill snapshot if stale (or nudge to
         // update). Best-effort — never blocks or fails the call below.
@@ -210,7 +218,8 @@ Persistent stdio session (leaves the local MCP server process running until Ctrl
           throw new Error('--keepalive is only supported for stdio transports');
         }
 
-        // If OAuth, authenticate first
+        // If OAuth, authenticate first. `call` names one server, so like `auth` it may open the browser
+        // (README, "Which commands may open a browser"); `exec` and the batch commands never do.
         const authProvider = (entry.transport.type === 'http' || entry.transport.type === 'sse') && entry.transport.auth === 'oauth'
           ? await authenticateIfNeeded(entry.transport.url, entry.transport.oauth)
           : undefined;
@@ -236,7 +245,9 @@ Persistent stdio session (leaves the local MCP server process running until Ctrl
           writeResults(calls, [output], json);
         }
       } catch (err) {
-        console.error(chalk.red(`Error: ${err instanceof Error ? err.message : err}`));
+        // What the tool says is its result; a connection or transport error is scrubbed of the server's credentials.
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(chalk.red(`Error: ${registered && !(err instanceof ToolError) ? scrubSecrets(registered, message) : message}`));
         process.exit(err instanceof UsageError ? 2 : 1);
       }
     });

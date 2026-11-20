@@ -18,6 +18,9 @@ process.env.HOME = home;
 process.env.USERPROFILE = home;
 // The only other variable that redirects a path mcpkit uses (Hermes skills).
 delete process.env.HERMES_HOME;
+// Not a path, but it decides whether skills are written per server or as one guide, for every agent
+// and over the settings file, so a shell that exports it must not change a result.
+delete process.env.MCPKIT_SKILLS;
 
 if (homedir() !== home) {
   throw new Error(`test isolation failed: os.homedir() is ${homedir()}, expected ${home}`);

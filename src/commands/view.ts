@@ -6,18 +6,25 @@ import { stringify } from 'yaml';
 import { getServer, getRegistryPath } from '../config.js';
 import { loadAgentSettings, resolveServerAgents } from '../agent-config.js';
 import { resolveRuntimeConfig } from '../runtime-config.js';
-import { DEFAULT_AUTO_REFRESH_TTL_SEC } from '../types.js';
+import { maskEntryForDisplay } from '../redact-config.js';
+import { DEFAULT_AUTO_REFRESH_TTL_SEC, type ServerEntry } from '../types.js';
 
 export function createViewCommand(): Command {
   return new Command('view')
     .description('Show full config for a registered server')
     .argument('<name>', 'Server name to view')
-    .option('--yaml', 'Output raw YAML for the entry')
+    .option('--yaml', 'Output YAML for the entry as stored')
+    .option('--json', 'Output JSON instead of text')
+    .option('--reveal', 'Print secrets (env values, headers, arguments, URL keys) in clear text instead of <redacted len=N>')
     .addHelpText('after', `
 Examples:
   $ mcpkit view github
-  $ mcpkit view github --yaml`)
-    .action(async (name: string, opts) => {
+  $ mcpkit view github --yaml
+  $ mcpkit view github --json
+
+Secrets are masked by default in every format. --reveal prints them as stored: keep that output
+out of logs, shared terminals and agent transcripts.`)
+    .action(async (name: string, opts: { yaml?: boolean; json?: boolean; reveal?: boolean }) => {
       try {
         const entry = await getServer(name);
         if (!entry) {
@@ -26,65 +33,77 @@ Examples:
         }
         const settings = await loadAgentSettings();
         const resolved = resolveServerAgents(entry, settings);
+        if (opts.reveal) {
+          console.error(chalk.yellow('Warning: --reveal prints secrets in clear text; do not paste this output into logs, chats or agent transcripts.'));
+        }
+        const show = (value: ServerEntry): ServerEntry => (opts.reveal ? value : maskEntryForDisplay(value));
 
         if (opts.yaml) {
           const content = await readFile(getRegistryPath(), 'utf-8');
           const registry = parse(content);
-          console.log(stringify({ [name]: registry.servers[name] }).trim());
+          console.log(stringify({ [name]: show(registry.servers[name]) }).trim());
           return;
         }
+
+        if (opts.json) {
+          console.log(JSON.stringify({ ...show(entry), agents: resolved.agents, agentSelectionMode: resolved.selectionMode }, null, 2));
+          return;
+        }
+
+        // Everything below prints the masked copy, never `entry` itself.
+        const shown = show(entry);
 
         // Formatted output
         console.log(chalk.bold(`\n${name}\n`));
 
-        if (entry.description) {
-          console.log(`  ${chalk.dim(entry.description)}\n`);
+        if (shown.description) {
+          console.log(`  ${chalk.dim(shown.description)}\n`);
         }
 
         // Transport
         console.log(chalk.blue('Transport'));
-        console.log(`  Type:    ${entry.transport.type}`);
+        console.log(`  Type:    ${shown.transport.type}`);
 
-        if (entry.transport.type === 'stdio') {
-          console.log(`  Command: ${entry.transport.command}`);
-          if (entry.transport.args.length > 0) {
-            console.log(`  Args:    ${entry.transport.args.join(' ')}`);
+        if (shown.transport.type === 'stdio') {
+          console.log(`  Command: ${shown.transport.command}`);
+          if (shown.transport.args.length > 0) {
+            console.log(`  Args:    ${shown.transport.args.join(' ')}`);
           }
 
-          if (entry.transport.env && Object.keys(entry.transport.env).length > 0) {
+          if (shown.transport.env && Object.keys(shown.transport.env).length > 0) {
             console.log(chalk.blue('\nEnv Vars'));
-            for (const [key, value] of Object.entries(entry.transport.env)) {
+            for (const [key, value] of Object.entries(shown.transport.env)) {
               console.log(`  ${key}=${value}`);
             }
           }
         } else {
-          console.log(`  URL:     ${entry.transport.url}`);
+          console.log(`  URL:     ${shown.transport.url}`);
 
-          if (entry.transport.auth) {
-            console.log(`  Auth:    ${entry.transport.auth}`);
+          if (shown.transport.auth) {
+            console.log(`  Auth:    ${shown.transport.auth}`);
           }
 
-          if (entry.transport.headers && Object.keys(entry.transport.headers).length > 0) {
+          if (shown.transport.headers && Object.keys(shown.transport.headers).length > 0) {
             console.log(chalk.blue('\nHeaders'));
-            for (const [key, value] of Object.entries(entry.transport.headers)) {
+            for (const [key, value] of Object.entries(shown.transport.headers)) {
               console.log(`  ${key}: ${value}`);
             }
           }
         }
 
         // Param provider
-        if (entry.paramProvider) {
+        if (shown.paramProvider) {
           console.log(chalk.blue('\nParam Provider'));
-          console.log(`  Command: ${entry.paramProvider.command}${entry.paramProvider.args ? ' ' + entry.paramProvider.args.join(' ') : ''}`);
-          if (entry.paramProvider.ttl) {
-            console.log(`  TTL:     ${entry.paramProvider.ttl}s`);
+          console.log(`  Command: ${shown.paramProvider.command}${shown.paramProvider.args ? ' ' + shown.paramProvider.args.join(' ') : ''}`);
+          if (shown.paramProvider.ttl) {
+            console.log(`  TTL:     ${shown.paramProvider.ttl}s`);
           }
         }
 
         // Env hints (surfaced when a referenced env var is missing at call time)
-        if (entry.envHints && Object.keys(entry.envHints).length > 0) {
+        if (shown.envHints && Object.keys(shown.envHints).length > 0) {
           console.log(chalk.blue('\nEnv Hints'));
-          for (const [key, value] of Object.entries(entry.envHints)) {
+          for (const [key, value] of Object.entries(shown.envHints)) {
             const lines = value.split('\n');
             console.log(`  ${chalk.bold(key)}:`);
             for (const line of lines) {

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { discoverForEntry, getToolsForServer, resolveAuthProvider } from './discover.js';
 import { discoverTools } from './client.js';
 import { authenticateIfNeeded, createStoredOAuthProvider } from './auth.js';
+import { OAuthRequiredError } from './oauth-required-error.js';
 import { loadSchemaCache, saveSchemaCache, schemaCacheDir, schemaCachePath } from './schema-store.js';
 import type { ToolInfo, TransportConfig } from './types.js';
 
@@ -93,7 +94,7 @@ describe('discover', () => {
       expect(createStoredOAuthProvider).toHaveBeenCalledWith(
         'https://mcp.example.com/mcp',
         { clientId: 'client-1' },
-        expect.stringContaining('run `mcpkit auth srv` first'),
+        'srv',
       );
     });
 
@@ -101,9 +102,10 @@ describe('discover', () => {
       const provider = fakeProvider(undefined);
       vi.mocked(createStoredOAuthProvider).mockResolvedValue(provider as never);
 
-      await expect(
-        resolveAuthProvider({ name: 'srv', transport: oauthHttp }, { interactive: false }),
-      ).rejects.toThrow('run `mcpkit auth srv` first');
+      const failure = await resolveAuthProvider({ name: 'srv', transport: oauthHttp }, { interactive: false })
+        .then(() => undefined, (err: unknown) => err);
+      expect(failure).toBeInstanceOf(OAuthRequiredError);
+      expect((failure as Error).message).toBe('srv needs sign-in. Run: mcpkit auth srv');
       expect(authenticateIfNeeded).not.toHaveBeenCalled();
       expect(provider.redirectToAuthorization).not.toHaveBeenCalled();
     });

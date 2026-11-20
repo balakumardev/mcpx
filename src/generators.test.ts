@@ -162,6 +162,20 @@ describe('generators', () => {
     expect(content).toContain('do **not** need to pass these params manually');
   });
 
+  it.each(['full', 'compact'] as const)('masks a credential in the param provider command in the %s format: a skill file is read by agents', async (format) => {
+    const { buildSkillContent } = await import('./generators/index.js');
+    const secret = 'sk-CANARYparam0123456789abcdefABCDEF';
+
+    const content = buildSkillContent({
+      ...ctx,
+      paramProvider: { command: `eiamcli iamticket --token ${secret} --scope read` },
+      tools: [{ name: 'search', description: 'Search for things', inputSchema: { type: 'object', properties: {} } }],
+    }, { format });
+
+    expect(content).toContain('eiamcli iamticket --token <redacted len=36> --scope read');
+    expect(content).not.toContain('CANARYparam');
+  });
+
   it('generates concrete example params for tools with required fields', async () => {
     const { buildSkillContent } = await import('./generators/index.js');
 

@@ -198,16 +198,16 @@ describe('schema cache is written where tools are discovered', () => {
       expect((await getServer('zeta'))?.toolCount).toBe(1);
     });
 
-    it('is interactive by default and passes interactiveAuth: false through', async () => {
+    it('never signs in by default (a batch command must not open a browser) and passes interactiveAuth: true through', async () => {
       const entry = makeEntry('eta');
       await addServer(entry);
 
       await refreshServer(entry, { quiet: true });
-      await refreshServer(entry, { quiet: true, interactiveAuth: false });
+      await refreshServer(entry, { quiet: true, interactiveAuth: true });
 
       expect(vi.mocked(discoverForEntry).mock.calls.map(([, opts]) => opts)).toEqual([
-        { interactiveAuth: true },
         { interactiveAuth: false },
+        { interactiveAuth: true },
       ]);
     });
 

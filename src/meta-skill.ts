@@ -141,6 +141,7 @@ export function buildMetaSkillContent(): string {
     '- Servers with more than 15 tools get a compact `SKILL.md` (one line per tool). Use `mcpkit describe <server> <tool>` for the schema of a tool before calling it.',
     '- `describe` prints annotations as "server-declared, untrusted": they are claims made by the server, not guarantees.',
     '- `describe` on an unknown tool exits 1 and lists the nearest names.',
+    '- To list every registered server in an agent\'s context at session start without per-server skills, run `mcpkit hook install` (a preview; add `--write` to apply it), after which the agent runs `mcpkit hook session-start`, which prints a short offline directory of the servers; `mcpkit hook session-start --format text` prints the same text to paste into CLAUDE.md or AGENTS.md.',
     '',
     SCRIPTING_BLOCK,
     '',
@@ -207,6 +208,8 @@ export function buildMetaSkillContent(): string {
     '```',
     '',
     '`--scope global` writes to the agent\'s home directory (e.g. `~/.claude/skills/`); `--scope project` writes into the current repository.',
+    '',
+    'With `mcpkit config skills guide` an agent gets only this guide and no per-server skills: it learns which servers exist from the session-start directory above or `mcpkit list`, and finds tools with `mcpkit search`.',
     '',
   ];
 
