@@ -7,6 +7,11 @@ on:
 permissions:
   contents: write
 
+# One release at a time: each run bumps the version and pushes to main.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   publish:
     runs-on: ubuntu-latest
@@ -21,8 +26,8 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
 
-      # Fail before the version bump is pushed: a rejected token used to leave a
-      # bumped commit and tag on main with nothing published behind them.
+      # Fail early on an expired or revoked token. (whoami needs no one-time password, so it
+      # cannot catch a token that lacks "bypass 2FA"; only the publish step can.)
       - name: Check npm credentials
         run: npm whoami
         env:
@@ -34,18 +39,14 @@ jobs:
 
       - run: npm test
 
+      # The bump is only in the working tree until the publish succeeds, so a failed
+      # publish leaves no version commit or tag on main (v0.1.30 and v0.1.31 were lost
+      # that way).
       - name: Bump patch version
         id: version
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
           npm version patch --no-git-tag-version
-          VERSION=$(node -p "require('./package.json').version")
-          echo "VERSION=${VERSION}" >> "$GITHUB_OUTPUT"
-          git add package.json package-lock.json
-          git commit -m "v${VERSION} [skip ci]"
-          git tag "v${VERSION}"
-          git push origin main --tags
+          echo "VERSION=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
 
       - run: npm run build
 
@@ -53,6 +54,22 @@ jobs:
         run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Commit and tag the published version
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add package.json package-lock.json
+          git commit -m "v${VERSION} [skip ci]"
+          for attempt in 1 2 3; do
+            git push origin main && break
+            [ "$attempt" = 3 ] && { echo "::error::v${VERSION} is on npm but the version commit could not be pushed"; exit 1; }
+            git pull --rebase origin main
+          done
+          git tag "v${VERSION}"
+          git push origin "v${VERSION}"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
