@@ -21,6 +21,13 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
 
+      # Fail before the version bump is pushed: a rejected token used to leave a
+      # bumped commit and tag on main with nothing published behind them.
+      - name: Check npm credentials
+        run: npm whoami
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
       - run: npm ci
 
       - run: npm run typecheck
