@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { linkSkillsDirectory } from './skill-fixtures.js';
 import type { AgentType, GeneratorContext, ToolInfo } from './types.js';
 
 // Wrap rename so a test can make one commit fail the way a file system can after staging went fine.
@@ -80,6 +82,17 @@ describe('reconcileSkillFiles with several agents', () => {
 
     expect(await readdir(home)).toEqual([]);
     expect(vi.mocked(fs.rename)).not.toHaveBeenCalled();
+  });
+
+  it('keeps the skill of a dropped agent that is the same file as the skill of an agent that stays (~/.codex/skills -> ~/.claude/skills), and still removes one that is not', async () => {
+    await linkSkillsDirectory('codex', 'claude-code');
+    const cursor = await installOldSkill('cursor');
+
+    await reconcileSkillFiles({ ctx, nextAgents: ['claude-code'], previousAgents: ['claude-code', 'codex', 'cursor'] });
+
+    expect(await readFile(await skillPath('claude-code'), 'utf-8')).toContain('# demo (MCP Server)');
+    expect(existsSync(cursor)).toBe(false);
+    expect(log.join('\n')).toContain(`- codex: kept ${await skillPath('codex')}, the same file as the claude-code skill`);
   });
 
   describe('when the second agent cannot be written', () => {

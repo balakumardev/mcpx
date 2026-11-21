@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { chmod, cp, mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from 'node:fs/promises';
+import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { stringify } from 'yaml';
 import { DEFAULT_MATCHER, HOOK_COMMAND } from './hook-settings.js';
 import { buildMetaSkillContent } from './meta-skill.js';
@@ -9,7 +9,7 @@ import { createProgram } from './program.js';
 import { classifyCommand, formatNotices, printNotices, reconcile, reconcileAfterChange } from './reconcile.js';
 import type { CommandClass, ReconcileReport } from './reconcile.js';
 import { schemaCachePath } from './schema-store.js';
-import { generatedSkill, writeGeneratedSkill, writeUserSkill } from './skill-fixtures.js';
+import { generatedSkill, linkSkill, linkSkillsDirectory, writeGeneratedSkill, writeUserSkill } from './skill-fixtures.js';
 import { loadState, stateFilePath } from './state.js';
 import { ALL_AGENTS } from './types.js';
 import type { AgentType } from './types.js';
@@ -1480,6 +1480,164 @@ describe('reconcile', () => {
 
       expect(report.skipped).toBe('MCPKIT_NO_MIGRATE is set');
       expect(await stats(home)).toEqual(before);
+    });
+  });
+
+  describe('a skills directory that two agents share through a symlink (~/.codex/skills -> ~/.claude/skills)', () => {
+    /** A registry of these servers, each installed for its own agents (writeRegistry gives all of them the same ones). */
+    async function writeServers(servers: Record<string, AgentType[]>): Promise<void> {
+      await mkdir(mcpkit(), { recursive: true });
+      const entries = Object.fromEntries(Object.entries(servers).map(([name, agents]) => [name, entry(name, agents)]));
+      await writeFile(mcpkit('servers.yaml'), stringify({ version: 1, servers: entries }), 'utf-8');
+    }
+
+    it('writes one guide with the servers of both agents, never has the two write over each other, and the next run is fast', async () => {
+      await linkSkillsDirectory('codex', 'claude-code');
+      await writeServers({ 'claude-only': ['claude-code'], both: ['claude-code', 'codex'], 'codex-only': ['codex'] });
+
+      const first = await reconcile('full', { now: NOW, env: NO_ENV });
+
+      expect(first.failed).toBeUndefined();
+      const guide = await readFile(guidePath('claude-code'), 'utf-8');
+      expect(await readFile(guidePath('codex'), 'utf-8')).toBe(guide);
+      for (const name of ['claude-only', 'both', 'codex-only']) expect(guide).toContain(`- ${name}`);
+      // Written for the first agent, and current for the second: not written again with codex's servers alone.
+      expect(first.actions.filter((action) => action.type === 'guide-written')).toEqual([{ type: 'guide-written', agent: 'claude-code' }]);
+      expect((await reconcile('full', { now: NOW, env: NO_ENV })).fast).toBe(true);
+
+      // A change to the registry rewrites it once, again with the servers of both.
+      await writeServers({ 'claude-only': ['claude-code'], both: ['claude-code', 'codex'], 'codex-only': ['codex'], 'claude-later': ['claude-code'] });
+      const third = await reconcile('full', { now: NOW, env: NO_ENV });
+      expect(third.actions.filter((action) => action.type === 'guide-written')).toEqual([{ type: 'guide-written', agent: 'claude-code' }]);
+      const rewritten = await readFile(guidePath('codex'), 'utf-8');
+      for (const name of ['claude-only', 'both', 'codex-only', 'claude-later']) expect(rewritten).toContain(`- ${name}`);
+    });
+
+    it('never removes a per-server skill of the agent that keeps per-server skills when the agent that shares its directory moves to the guide, now or once the server is indexed', async () => {
+      await linkSkillsDirectory('codex', 'claude-code');
+      await writeSettingsFile('version: 1\nskills:\n  agents:\n    claude-code: per-server\n');
+      await writeServers({ indexed: ['claude-code', 'codex'], unindexed: ['claude-code', 'codex'], 'codex-only': ['codex'] });
+      await writeCache('indexed');
+      await writeCache('codex-only');
+      // Claude Code's live skills, and one left from when codex had per-server skills too: all in the one directory.
+      const indexed = await writeGeneratedSkill('claude-code', 'indexed');
+      const unindexed = await writeGeneratedSkill('claude-code', 'unindexed');
+      await writeGeneratedSkill('codex', 'codex-only');
+
+      const report = await reconcile('full', { now: NOW, env: NO_ENV });
+
+      expect(report.failed).toBeUndefined();
+      expect(report.actions).toContainEqual(expect.objectContaining({ type: 'adopted', agent: 'codex', removed: 1, deferred: [] }));
+      expect(await names(skillsOf('claude-code'))).toEqual(['mcpkit-cli', 'mcpkit-indexed', 'mcpkit-unindexed']);
+      expect(await readFile(indexed.path, 'utf-8')).toBe(indexed.content);
+      expect(await readFile(unindexed.path, 'utf-8')).toBe(unindexed.content);
+      const [backup] = await backups();
+      expect(await names(mcpkit('skill-backups', backup, 'codex'))).toEqual(['mcpkit-codex-only']);
+
+      // The server that was not indexed is indexed now: the run that would remove a kept skill leaves Claude Code's alone.
+      await writeCache('unindexed');
+      await reconcile('full', { now: new Date(NOW.getTime() + 60_000), env: NO_ENV });
+
+      expect(await readFile(unindexed.path, 'utf-8')).toBe(unindexed.content);
+      expect(await readFile(indexed.path, 'utf-8')).toBe(indexed.content);
+    });
+
+    // One skill folder, or one SKILL.md, linked instead of the whole skills directory; codex stays on per-server skills, claude-code is adopted.
+    describe.each(['folder', 'file'] as const)('a skill %s that two agents read through a symlink', (level) => {
+      beforeEach(async () => {
+        await writeSettingsFile('version: 1\nskills:\n  agents:\n    codex: per-server\n');
+        await writeServers({ github: ['claude-code', 'codex'] });
+      });
+
+      it('adoption keeps the real skill of the agent it moves when the agent on per-server skills links to it', async () => {
+        await writeCache('github');
+        const { link, real } = await linkSkill('codex', 'claude-code', 'github', level);
+
+        const report = await reconcile('full', { now: NOW, env: NO_ENV });
+
+        expect(report.failed).toBeUndefined();
+        expect(report.actions).toContainEqual(expect.objectContaining({ type: 'adopted', agent: 'claude-code', removed: 0, deferred: [] }));
+        expect(await readFile(real.path, 'utf-8')).toBe(real.content);
+        expect(await readFile((await generatedSkill('codex', 'github')).path, 'utf-8')).toBe(real.content);
+        expect((await lstat(link)).isSymbolicLink()).toBe(true);
+        expect(await backups()).toEqual([]);
+      });
+
+      it('adoption keeps the link of the agent it moves, and the real skill of the agent on per-server skills', async () => {
+        await writeCache('github');
+        await writeSettingsFile('version: 1\nskills:\n  agents:\n    claude-code: per-server\n');
+        const { link, real } = await linkSkill('codex', 'claude-code', 'github', level);
+
+        const report = await reconcile('full', { now: NOW, env: NO_ENV });
+
+        expect(report.failed).toBeUndefined();
+        expect(report.actions).toContainEqual(expect.objectContaining({ type: 'adopted', agent: 'codex', removed: 0 }));
+        expect(await readFile(real.path, 'utf-8')).toBe(real.content);
+        expect((await lstat(link)).isSymbolicLink()).toBe(true);
+        expect(await backups()).toEqual([]);
+      });
+
+      it('the deferred cleanup keeps a skill it kept at adoption, and keeps its name on the list, while the agent on per-server skills links to it; once nobody does, a run removes it', async () => {
+        // Adopted before the link and before the server was indexed: the skill is kept until indexed.
+        await writeSettingsFile('version: 1\n');
+        const claude = await writeGeneratedSkill('claude-code', 'github');
+        const first = await reconcile('full', { now: NOW, env: NO_ENV });
+        expect(first.actions).toContainEqual(expect.objectContaining({ type: 'adopted', agent: 'claude-code', removed: 0, deferred: ['github'] }));
+
+        await writeSettingsFile('version: 1\nskills:\n  agents:\n    codex: per-server\n');
+        const codex = await generatedSkill('codex', 'github');
+        const link = codex[level === 'folder' ? 'dir' : 'path'];
+        await mkdir(dirname(link), { recursive: true });
+        await symlink(level === 'folder' ? claude.dir : claude.path, link);
+        await writeCache('github');
+        const second = await reconcile('full', { now: new Date(NOW.getTime() + 60_000), env: NO_ENV });
+
+        expect(second.failed).toBeUndefined();
+        expect(second.actions.filter((action) => action.type === 'deferred-removed')).toEqual([]);
+        expect(await readFile(claude.path, 'utf-8')).toBe(claude.content);
+        expect(await readFile(codex.path, 'utf-8')).toBe(claude.content);
+        expect(await backups()).toEqual([]);
+        // Shared, not gone: the name stays, so a later run can still remove the skill.
+        expect(loadState().state.adopted['claude-code']?.deferred).toEqual(['github']);
+
+        // The share ends: codex drops its link (rm takes the link, not what it points to) and goes back to the guide.
+        await rm(codex.dir, { recursive: true, force: true });
+        await writeSettingsFile('version: 1\n');
+        const third = await reconcile('full', { now: new Date(NOW.getTime() + 120_000), env: NO_ENV });
+
+        expect(third.failed).toBeUndefined();
+        expect(third.actions).toContainEqual(expect.objectContaining({ type: 'deferred-removed', agent: 'claude-code', removed: 1 }));
+        expect(await names(skillsOf('claude-code'))).toEqual(['mcpkit-cli']);
+        const [backup] = await backups();
+        expect(await readFile(mcpkit('skill-backups', backup, 'claude-code', 'mcpkit-github', 'SKILL.md'), 'utf-8')).toBe(claude.content);
+        expect(loadState().state.adopted['claude-code']?.deferred).toEqual([]);
+      });
+
+      it('adoption puts a skill it keeps because the agent on per-server skills links to it on the record\'s list, not the report\'s; once nobody does, a run removes it', async () => {
+        await writeCache('github');
+        const { real } = await linkSkill('codex', 'claude-code', 'github', level);
+
+        const first = await reconcile('full', { now: NOW, env: NO_ENV });
+
+        expect(first.failed).toBeUndefined();
+        // Nothing waits to be indexed, so the report says none; the record keeps the name for when the share ends.
+        expect(first.actions).toContainEqual(expect.objectContaining({ type: 'adopted', agent: 'claude-code', removed: 0, deferred: [] }));
+        expect(formatNotices(first).join('\n')).not.toContain('not indexed yet');
+        expect(loadState().state.adopted['claude-code']?.deferred).toEqual(['github']);
+        expect(await readFile(real.path, 'utf-8')).toBe(real.content);
+
+        // The share ends: codex drops its link (rm takes the link, not what it points to) and goes back to the guide.
+        await rm((await generatedSkill('codex', 'github')).dir, { recursive: true, force: true });
+        await writeSettingsFile('version: 1\n');
+        const second = await reconcile('full', { now: new Date(NOW.getTime() + 60_000), env: NO_ENV });
+
+        expect(second.failed).toBeUndefined();
+        expect(second.actions).toContainEqual(expect.objectContaining({ type: 'deferred-removed', agent: 'claude-code', removed: 1 }));
+        expect(await names(skillsOf('claude-code'))).toEqual(['mcpkit-cli']);
+        const [backup] = await backups();
+        expect(await readFile(mcpkit('skill-backups', backup, 'claude-code', 'mcpkit-github', 'SKILL.md'), 'utf-8')).toBe(real.content);
+        expect(loadState().state.adopted['claude-code']?.deferred).toEqual([]);
+      });
     });
   });
 

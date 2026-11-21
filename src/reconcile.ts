@@ -15,7 +15,7 @@ import { schemaCacheDir } from './schema-store.js';
 import { SKILL_DIR_PREFIX } from './server-name.js';
 import { getSettingsPath, loadSettings, readEnvMode, resolveSkillModeSource } from './settings.js';
 import type { LoadedSettings } from './settings.js';
-import { backupSkillDirs, planGuideMigration, removeGeneratedSkillDirs } from './skill-mode-migration.js';
+import { backupSkillDirs, perServerSkillOwners, planGuideMigration, removeGeneratedSkillDirs } from './skill-mode-migration.js';
 import type { AgentMigrationPlan } from './skill-mode-migration.js';
 import { deferredOf, loadState, updateState } from './state.js';
 import type { GuideFileSignature, McpkitState } from './state.js';
@@ -237,7 +237,7 @@ async function exists(path: string): Promise<boolean> {
  * there, so their guide must be too). An agent that a server names but that is not installed gets no
  * folder made for it.
  */
-async function gather(): Promise<GatherResult> {
+async function gather(env: NodeJS.ProcessEnv): Promise<GatherResult> {
   const settings = await loadSettings();
   if (settings.unusable) return { skipped: `${settings.path} cannot be used: ${settings.reason}` };
 
@@ -249,14 +249,17 @@ async function gather(): Promise<GatherResult> {
   }
 
   const agentSettings = await loadAgentSettings();
-  const inUse = agentsInUse(resolveEntryAgents(entries, agentSettings));
+  const resolved = resolveEntryAgents(entries, agentSettings);
+  const inUse = agentsInUse(resolved);
+  // The skills of the agents on per-server skills: no plan removes them from a skills directory another agent shares.
+  const owners = perServerSkillOwners(settings, resolved, env);
   const installed = new Set(detectHomeAgents());
   const plans = new Map<AgentType, AgentMigrationPlan>();
   const agents: AgentType[] = [];
   for (const agent of ALL_AGENTS) {
     let plan: AgentMigrationPlan | undefined;
     try {
-      plan = await planGuideMigration(agent);
+      plan = await planGuideMigration(agent, owners);
       plans.set(agent, plan);
     } catch {
       // The skills directory cannot be read: nothing is removed from it, but an agent in use still gets its guide.
@@ -420,7 +423,7 @@ async function retryPendingHook(now: Date, report: ReconcileReport): Promise<voi
  */
 async function adopt(candidates: AgentType[], l: Loaded, state: McpkitState, now: Date, pkgVersion: string, report: ReconcileReport): Promise<boolean> {
   let ok = true;
-  interface Move { agent: AgentType; plan: AgentMigrationPlan; removable: AgentMigrationPlan; deferred: string[] }
+  interface Move { agent: AgentType; plan: AgentMigrationPlan; removable: AgentMigrationPlan; deferred: string[]; shared: string[] }
   const moves: Move[] = [];
 
   for (const agent of candidates) {
@@ -428,20 +431,24 @@ async function adopt(candidates: AgentType[], l: Loaded, state: McpkitState, now
     if (plan === undefined) { ok = false; continue; }
     const removable = { ...plan, remove: [] as string[] };
     const deferred: string[] = [];
-    if (plan.remove.length > 0) {
+    const sharedKeeps = plan.keep.filter((kept) => kept.sharedWith !== undefined).map((kept) => serverOf(kept.dir));
+    const shared: string[] = [];
+    if (plan.remove.length > 0 || sharedKeeps.length > 0) {
       const servers = indexedServers(l, agent);
       for (const dir of plan.remove) {
         const name = serverOf(dir);
         if (servers.indexed.has(name)) removable.remove.push(dir);
         else if (servers.listed.has(name)) deferred.push(name);
       }
+      // Kept because another agent reads the same file: on the record's list only (the report's says "not indexed yet"), so a later run removes it once nobody does.
+      shared.push(...sharedKeeps.filter((name) => servers.listed.has(name)));
     }
-    moves.push({ agent, plan, removable, deferred });
+    moves.push({ agent, plan, removable, deferred, shared });
   }
 
   const backups = await backUp(moves.map((move) => move.removable).filter((plan) => plan.remove.length > 0), now, report);
 
-  for (const { agent, removable, deferred } of moves) {
+  for (const { agent, removable, deferred, shared } of moves) {
     let removed = 0;
     // A skill that was backed up but could not be removed is kept like one whose server is not indexed: it has a cache, so the next run's deferred step removes it.
     let stuck: string[] = [];
@@ -455,7 +462,7 @@ async function adopt(candidates: AgentType[], l: Loaded, state: McpkitState, now
     const backup = backups.get(agent) ?? null;
     // The hook is written down as pending in the same write as the adoption: a run that stops before the hook step (a crash, a kill) cannot lose it.
     const saved = await updateState((current) => {
-      current.adopted[agent] = { at: now.toISOString(), by: pkgVersion, removed, backup, deferred: [...deferred, ...stuck], ...(agent === 'claude-code' && !current.hookDeclined ? { hookPending: true } : {}) };
+      current.adopted[agent] = { at: now.toISOString(), by: pkgVersion, removed, backup, deferred: [...deferred, ...stuck, ...shared], ...(agent === 'claude-code' && !current.hookDeclined ? { hookPending: true } : {}) };
     }, STATE_LOCK);
     if (!saved) ok = false;
     report.actions.push({ type: 'adopted', agent, removed, backup, deferred });
@@ -467,8 +474,9 @@ async function adopt(candidates: AgentType[], l: Loaded, state: McpkitState, now
 /**
  * The skills kept at adoption (`deferred`) whose servers are in a schema cache by now: back them up
  * and remove them, and forget the names. A name whose skill is gone, or is no longer one mcpkit
- * generated, is forgotten without touching anything. Only the names in the record are ever looked
- * at, so a skill the user brings back for a server that was already moved stays.
+ * generated, is forgotten without touching anything; one whose skill another agent on per-server
+ * skills reads (the same file) stays on the list, untouched, until nobody does. Only the names in
+ * the record are ever looked at, so a skill the user brings back for a server that was already moved stays.
  */
 async function removeDeferred(l: Loaded, state: McpkitState, env: NodeJS.ProcessEnv, now: Date, noGuide: ReadonlySet<AgentType>, report: ReconcileReport): Promise<boolean> {
   let ok = true;
@@ -487,12 +495,16 @@ async function removeDeferred(l: Loaded, state: McpkitState, env: NodeJS.Process
 
     const servers = indexedServers(l, agent);
     const generated = new Map(plan.remove.map((dir) => [serverOf(dir), dir]));
+    // Kept only because another agent on per-server skills reads the same file: not gone, so not forgotten.
+    const shared = new Set(plan.keep.filter((kept) => kept.sharedWith !== undefined).map((kept) => serverOf(kept.dir)));
     const removable = { ...plan, remove: [] as string[] };
     const settled: string[] = [];
     for (const name of names) {
       const dir = generated.get(name);
-      if (dir === undefined) settled.push(name);
-      else if (servers.indexed.has(name)) {
+      if (dir === undefined) {
+        // A shared skill stays on the list, to go in a later run once nobody shares it and its server is indexed.
+        if (!shared.has(name)) settled.push(name);
+      } else if (servers.indexed.has(name)) {
         removable.remove.push(dir);
         settled.push(name);
       }
@@ -564,7 +576,7 @@ async function reconcileLocked(kind: ReconcileKind, env: NodeJS.ProcessEnv, now:
     return;
   }
 
-  const result = await gather();
+  const result = await gather(env);
   if ('skipped' in result) {
     report.skipped = result.skipped;
     return;
@@ -644,7 +656,7 @@ async function run(kind: ReconcileKind, opts: ReconcileOptions, report: Reconcil
       return;
     }
   } else {
-    const preview = await gather();
+    const preview = await gather(env);
     if ('skipped' in preview) { report.skipped = preview.skipped; return; }
     if (preview.gathered.agents.length === 0) { report.skipped = 'there is no agent to reconcile'; return; }
   }

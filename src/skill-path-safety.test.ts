@@ -4,16 +4,19 @@ import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parse } from 'yaml';
+import { createAgentSettings, saveAgentSettings } from './agent-config.js';
+import { createEditCommand } from './commands/edit.js';
 import { createRemoveCommand } from './commands/remove.js';
 import { createSyncCommand } from './commands/sync.js';
 import { createUpdateCommand } from './commands/update.js';
 import { getGenerator } from './generators/index.js';
 import { reconcileSkillFiles } from './skill-sync.js';
 import { removeSkillDirectory, writeSkillFile } from './skill-file.js';
-import { getRegistryPath, getServer } from './config.js';
+import { linkSkillsDirectory, writeGeneratedSkill } from './skill-fixtures.js';
+import { addServer, getRegistryPath, getServer } from './config.js';
 import { discoverForEntry } from './discover.js';
 import { ALL_AGENTS } from './types.js';
-import type { AgentType, GeneratorContext, ToolInfo } from './types.js';
+import type { AgentSelectionMode, AgentType, GeneratorContext, ToolInfo } from './types.js';
 
 vi.mock('./discover.js', () => ({
   discoverForEntry: vi.fn(),
@@ -249,6 +252,69 @@ describe('skill paths are always inside the agent skills directory', () => {
       const stored = (parse(await readFile(getRegistryPath(), 'utf-8')) as { servers: Record<string, { name: string }> }).servers;
       expect(Object.keys(stored)).toEqual(['good', 'x/../../../victim', 'alias', 'a/b', '..', 'mismatch']);
       expect(stored.alias.name).toBe('../../victim');
+    });
+  });
+
+  describe('a skills directory that two agents share through a symlink (~/.codex/skills -> ~/.claude/skills)', () => {
+    beforeEach(async () => {
+      // One skill per server, so each agent of a server has a skill to lose.
+      vi.stubEnv('MCPKIT_SKILLS', 'per-server');
+      await linkSkillsDirectory('codex', 'claude-code');
+    });
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    /** What the command printed. */
+    const logged = (): string => vi.mocked(console.log).mock.calls.map((call) => call.join(' ')).join('\n');
+
+    /** `github`, installed for Claude Code and codex: one skill file, which both agents read. */
+    async function sharedServer(agentSelectionMode: AgentSelectionMode = 'explicit'): Promise<{ path: string; content: string }> {
+      const now = '2026-01-01T00:00:00.000Z';
+      await addServer({ name: 'github', transport: { type: 'stdio', command: 'node', args: [] }, toolCount: 1, agents: ['claude-code', 'codex'], agentSelectionMode, createdAt: now, updatedAt: now });
+      return writeGeneratedSkill('claude-code', 'github');
+    }
+
+    it('remove -a codex leaves the skill Claude Code reads through the same file', async () => {
+      const skill = await sharedServer();
+
+      await createRemoveCommand().parseAsync(['github', '-a', 'codex'], { from: 'user' });
+
+      expect(process.exit).not.toHaveBeenCalled();
+      expect(await readFile(skill.path, 'utf-8')).toBe(skill.content);
+      expect((await getServer('github'))?.agents).toEqual(['claude-code']);
+      // The skill that stayed is not reported as removed: only codex is.
+      expect(logged()).toContain(`codex: kept ${join(homeDir, '.codex', 'skills', 'mcpkit-github', 'SKILL.md')}, the same file as the claude-code skill`);
+      expect(logged()).toContain('✓ Removed codex from "github"; its skill file stays, as claude-code reads it too');
+      expect(logged()).not.toContain('Removed codex skill');
+    });
+
+    it('edit --remove-agent codex leaves the skill Claude Code reads through the same file', async () => {
+      const skill = await sharedServer();
+
+      await createEditCommand().parseAsync(['github', '--remove-agent', 'codex'], { from: 'user' });
+
+      expect(process.exit).not.toHaveBeenCalled();
+      expect(await readFile(skill.path, 'utf-8')).toBe(skill.content);
+      expect((await getServer('github'))?.agents).toEqual(['claude-code']);
+      // The agent is removed, its skill file is not, and the output says which is which.
+      expect(logged()).toContain(`codex: kept ${join(homeDir, '.codex', 'skills', 'mcpkit-github', 'SKILL.md')}, the same file as the claude-code skill`);
+      expect(logged()).toContain('✓ Removed 1 agent(s)');
+    });
+
+    it('update drops the codex skill of a server codex no longer gets, and leaves the Claude Code skill that is the same file', async () => {
+      // The server follows the default agents, which no longer include codex.
+      await saveAgentSettings(createAgentSettings(['claude-code']));
+      const skill = await sharedServer('defaults');
+
+      await createUpdateCommand().parseAsync(['github'], { from: 'user' });
+
+      expect(process.exit).not.toHaveBeenCalled();
+      expect(await readFile(skill.path, 'utf-8')).toContain('# github (MCP Server)');
+      expect((await getServer('github'))?.agents).toEqual(['claude-code']);
+      // update refreshes quietly: the kept skill is not reported as removed either.
+      expect(logged()).not.toContain('Removed codex');
     });
   });
 });

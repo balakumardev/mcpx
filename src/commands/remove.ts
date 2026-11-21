@@ -5,6 +5,7 @@ import { getGenerator } from '../generators/index.js';
 import { loadAgentSettings, normalizeAgentList, resolveServerAgents } from '../agent-config.js';
 import { reconcileAfterChange } from '../reconcile.js';
 import { stopRuntime } from '../runtime-manager.js';
+import { sameFileAs } from '../same-file.js';
 import { removeSchemaCache } from '../schema-store.js';
 import { removeSkillDirectory } from '../skill-file.js';
 import { ALL_AGENTS } from '../types.js';
@@ -46,10 +47,21 @@ Examples:
           : trackedAgents;
         const agentsToRemove: AgentType[] = requestedAgents.filter(agent => trackedAgents.includes(agent));
         const ctx = { serverName: name, tools: [], transport: entry.transport, scope: 'global' as const };
+        // With -a the other agents keep the server: a removed agent's skill that is the same file as one of theirs (a shared skills directory) stays.
+        const kept = opts.agent
+          ? await Promise.all(resolved.agents.filter(agent => !agentsToRemove.includes(agent)).map(async (agent) => (await getGenerator(agent))(ctx)))
+          : [];
+        let sharedWith: AgentType | undefined;
 
         for (const agent of agentsToRemove) {
           const generate = await getGenerator(agent);
           const skill = generate(ctx);
+          const sharer = await sameFileAs(skill.filePath, kept);
+          if (sharer !== undefined) {
+            console.log(chalk.dim(`  ${agent}: kept ${skill.filePath}, the same file as the ${sharer.agent} skill`));
+            sharedWith = sharer.agent;
+            continue;
+          }
 
           try {
             // All generators now use SKILL.md in a skill directory — remove the directory
@@ -81,7 +93,8 @@ Examples:
               current.agents = entry.agents;
               current.updatedAt = entry.updatedAt;
             });
-            console.log(chalk.green(`✓ Removed ${opts.agent} skill for "${name}"`));
+            // A skill kept above (another agent reads the same file) was not removed: only the agent was.
+            console.log(chalk.green(sharedWith === undefined ? `✓ Removed ${opts.agent} skill for "${name}"` : `✓ Removed ${opts.agent} from "${name}"; its skill file stays, as ${sharedWith} reads it too`));
           }
         }
         // The guide still lists the server until it is rewritten.

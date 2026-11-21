@@ -5,9 +5,12 @@ import type { DirectorySource } from './directory-snapshot.js';
 import { SCRIPTING_BLOCK, getGenerator } from './generators/index.js';
 import { buildGuideDirectory } from './guide-directory.js';
 import type { GuideDirectory } from './guide-directory.js';
+import { realPathOf } from './same-file.js';
+import type { DirectoryServer } from './session-context.js';
 import { loadSettings, resolveSkillModeSource } from './settings.js';
 import type { LoadedSettings } from './settings.js';
 import { writeSkillFile } from './skill-file.js';
+import { ALL_AGENTS } from './types.js';
 import type { AgentType, Scope } from './types.js';
 
 // The meta-skill is written to <agent>/skills/mcpkit-cli/SKILL.md. We reuse the
@@ -305,6 +308,20 @@ async function guidePathOf(agent: AgentType, scope: Scope): Promise<string> {
   }).filePath;
 }
 
+/**
+ * The agents whose guide (in `scope`) is the same file as the guide of `agent` once symlinks are
+ * resolved, `agent` among them: a skills directory linked to another agent's (`~/.codex/skills ->
+ * ~/.claude/skills`) makes their two guides one file.
+ */
+async function guideReaders(agent: AgentType, scope: Scope): Promise<AgentType[]> {
+  const own = await realPathOf(await guidePathOf(agent, scope));
+  const readers: AgentType[] = [];
+  for (const other of ALL_AGENTS) {
+    if (other === agent || await realPathOf(await guidePathOf(other, scope)) === own) readers.push(other);
+  }
+  return readers;
+}
+
 interface GuidePlan {
   path: string;
   content: string;
@@ -319,15 +336,22 @@ interface GuidePlan {
  * telling whether the one on disk is current. An agent in guide mode gets the directory of its
  * servers in the guide itself; so does nothing else: an agent with per-server skills, a project
  * scope guide (the user's server list is not for a repository) and an empty registry get the
- * generic guide.
+ * generic guide. A guide file that other agents read too (a shared skills directory) lists the
+ * servers of every one of them in guide mode, whichever of them it is written for.
  */
 async function planGuide(agent: AgentType, scope: Scope, settings: LoadedSettings, pkgVersion: string, source: DirectorySource = loadDirectoryServersChecked): Promise<GuidePlan> {
   let directory: GuideDirectory | undefined;
   let registryUnreadable = false;
-  if (scope === 'global' && resolveSkillModeSource(settings, agent).mode === 'guide') {
-    const { servers, ok } = await source(agent);
-    if (!ok) registryUnreadable = true;
-    else if (servers.length > 0) directory = buildGuideDirectory(servers);
+  if (scope === 'global') {
+    // The union of the servers of the agents that read this file: written for one of them alone, it would drop the servers of the others.
+    const servers = new Map<string, DirectoryServer>();
+    for (const reader of await guideReaders(agent, scope)) {
+      if (resolveSkillModeSource(settings, reader).mode !== 'guide') continue;
+      const listed = await source(reader);
+      if (!listed.ok) registryUnreadable = true;
+      for (const server of listed.servers) if (!servers.has(server.name)) servers.set(server.name, server);
+    }
+    if (!registryUnreadable && servers.size > 0) directory = buildGuideDirectory([...servers.values()]);
   }
   const content = buildMetaSkillContent({ directory, pkgVersion });
   return { path: await guidePathOf(agent, scope), content, marker: readGuideMarker(content) ?? '', registryUnreadable };
@@ -375,7 +399,8 @@ async function exists(path: string): Promise<boolean> {
 /**
  * Write the `mcpkit-cli` meta-skill once per command run, to each target agent, and return the paths
  * written. Call this from install/sync/update after the per-server skills are written, so the
- * directory in the guide of an agent in guide mode lists the server that was just added.
+ * directory in the guide of an agent in guide mode lists the server that was just added. A guide that
+ * several of the agents read (a shared skills directory) is written once, for the first of them.
  *
  * A guide for an agent in guide mode carries the live directory of its servers. When the registry
  * exists but cannot be read, an existing guide is left as it is (rewriting it would replace its
@@ -392,6 +417,8 @@ export async function writeMetaSkill(options: WriteMetaSkillOptions): Promise<st
   const settings = options.settings ?? await loadSettings();
   const pkgVersion = options.pkgVersion ?? defaultPkgVersion();
   const seen = new Set<AgentType>();
+  // The real path of each guide written so far: an agent whose guide is the same file (a shared skills directory) has it already.
+  const writtenTo = new Map<string, AgentType>();
 
   for (const agent of agents) {
     if (seen.has(agent)) continue;
@@ -402,6 +429,14 @@ export async function writeMetaSkill(options: WriteMetaSkillOptions): Promise<st
       continue;
     }
 
+    const path = await guidePathOf(agent, scope);
+    const real = await realPathOf(path);
+    const first = writtenTo.get(real);
+    if (first !== undefined) {
+      say(chalk.green(`${logPrefix}✓ mcpkit-cli guide (${agent}): ${path} (the same file as the ${first} guide)`));
+      continue;
+    }
+
     const plan = await planGuide(agent, scope, settings, pkgVersion, options.directory);
     if (plan.registryUnreadable && await exists(plan.path)) {
       say(chalk.dim(`${logPrefix}mcpkit-cli guide (${agent}): left as it is, the registry cannot be read: ${plan.path}`));
@@ -409,6 +444,7 @@ export async function writeMetaSkill(options: WriteMetaSkillOptions): Promise<st
     }
     await writeSkillFile(plan.path, plan.content);
     written.push(plan.path);
+    writtenTo.set(real, agent);
     say(chalk.green(`${logPrefix}✓ mcpkit-cli guide (${agent}): ${plan.path}`));
   }
   return written;
