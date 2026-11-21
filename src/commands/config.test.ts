@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MockInstance } from 'vitest';
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -12,7 +12,7 @@ import { loadDirectoryServers } from '../directory.js';
 import { buildGuideDirectory } from '../guide-directory.js';
 import { buildMetaSkillContent } from '../meta-skill.js';
 import { OAuthRequiredError } from '../oauth-required-error.js';
-import { generatedSkill, treeOf, writeGeneratedSkill, writeUserSkill } from '../skill-fixtures.js';
+import { generatedSkill, linkSkill, linkSkillsDirectory, treeOf, writeGeneratedSkill, writeUserSkill } from '../skill-fixtures.js';
 import type { AgentType, ServerEntry, ToolInfo } from '../types.js';
 
 vi.mock('../discover.js', () => ({
@@ -142,6 +142,21 @@ describe('mcpkit config', () => {
 
         expect(stdout()).toContain('adopted 2026-11-20: 3 skills moved to /b; 1 kept until indexed');
         expect(await treeOf(home)).toEqual(before);
+      });
+
+      it('does not count a kept skill that an agent on per-server skills reads (the same file) as kept until indexed, and writes nothing', async () => {
+        await writeState({ 'claude-code': { at: '2026-11-20T10:00:00.000Z', by: '0.1.33', removed: 0, backup: null, deferred: ['github'] } });
+        await writeFile(settingsFile(), 'version: 1\nskills:\n  agents:\n    codex: per-server\n', 'utf-8');
+        // codex's skill folder is a link to the generated skill claude-code kept: it goes once nobody shares it, not once indexed.
+        await linkSkill('codex', 'claude-code', 'github', 'folder');
+        const before = await treeOf(home);
+
+        await run('skills');
+
+        expect(lines()[agentLine('claude-code') + 1].trim()).toBe('adopted 2026-11-20: 0 skills moved');
+        expect(stdout()).not.toContain('kept until indexed');
+        expect(await treeOf(home)).toEqual(before);
+        expect(exitSpy).not.toHaveBeenCalled();
       });
 
       it('does not say "to null" when nothing was backed up, and reads a record from before the list of kept skills as none kept', async () => {
@@ -443,6 +458,76 @@ describe('mcpkit config', () => {
       expect(existsSync(join(home, '.codex', 'skills', 'mcpkit-cli', 'SKILL.md'))).toBe(true);
       expect(existsSync(join(home, '.claude'))).toBe(false);
       expect(existsSync(join(home, '.mcpkit', 'skill-backups'))).toBe(false);
+    });
+
+    it('leaves the skills of an agent that stays on per-server skills when its skills directory is the one of the agent switched (~/.codex/skills -> ~/.claude/skills)', async () => {
+      await linkSkillsDirectory('codex', 'claude-code');
+      await mkdir(join(home, '.mcpkit'), { recursive: true });
+      await writeFile(settingsFile(), 'version: 1\nskills:\n  agents:\n    claude-code: per-server\n', 'utf-8');
+      await addServer(entry('github', ['claude-code', 'codex']));
+      await addServer(entry('codex-only', ['codex']));
+      const github = await writeGeneratedSkill('claude-code', 'github');
+      const codexOnly = await writeGeneratedSkill('codex', 'codex-only');
+
+      await run('skills', 'guide', '--agent', 'codex');
+
+      expect(exitSpy).not.toHaveBeenCalled();
+      expect(await readFile(github.path, 'utf-8')).toBe(github.content);
+      expect(stdout()).toContain(`codex: keep ${join(home, '.codex', 'skills', 'mcpkit-github')} (it is the same file as the per-server skill of claude-code)`);
+      // A skill only codex had is still backed up and removed.
+      expect(existsSync(codexOnly.dir)).toBe(false);
+      const [backup] = await readdir(join(home, '.mcpkit', 'skill-backups'));
+      expect(await readdir(join(home, '.mcpkit', 'skill-backups', backup, 'codex'))).toEqual(['mcpkit-codex-only']);
+    });
+
+    it('keeps every skill an agent on per-server skills reads through a shared skills directory when the registry cannot be read (nothing says which are live)', async () => {
+      await linkSkillsDirectory('codex', 'claude-code');
+      await mkdir(join(home, '.mcpkit'), { recursive: true });
+      await writeFile(settingsFile(), 'version: 1\nskills:\n  agents:\n    claude-code: per-server\n', 'utf-8');
+      const github = await writeGeneratedSkill('claude-code', 'github');
+      await writeFile(join(home, '.mcpkit', 'servers.yaml'), 'servers: [unclosed', 'utf-8');
+
+      await run('skills', 'guide', '--agent', 'codex');
+
+      expect(exitSpy).not.toHaveBeenCalled();
+      expect(stderr()).toContain('Could not read the registry');
+      expect(await readFile(github.path, 'utf-8')).toBe(github.content);
+      expect(stdout()).toContain(`codex: keep ${join(home, '.codex', 'skills', 'mcpkit-github')} (it is the same file as the per-server skill of claude-code)`);
+      expect(existsSync(join(home, '.mcpkit', 'skill-backups'))).toBe(false);
+    });
+
+    // One skill folder, or one SKILL.md, linked instead of the whole skills directory; claude-code stays on per-server skills, codex moves.
+    describe.each(['folder', 'file'] as const)('a skill %s that two agents read through a symlink', (level) => {
+      beforeEach(async () => {
+        await mkdir(join(home, '.mcpkit'), { recursive: true });
+        await writeFile(settingsFile(), 'version: 1\nskills:\n  agents:\n    claude-code: per-server\n', 'utf-8');
+        await addServer(entry('github', ['claude-code', 'codex']));
+      });
+
+      it('keeps the real skill of the agent that moves when the agent that stays links to it', async () => {
+        const { link, real } = await linkSkill('claude-code', 'codex', 'github', level);
+
+        await run('skills', 'guide', '--agent', 'codex');
+
+        expect(exitSpy).not.toHaveBeenCalled();
+        expect(await readFile(real.path, 'utf-8')).toBe(real.content);
+        expect(await readFile((await generatedSkill('claude-code', 'github')).path, 'utf-8')).toBe(real.content);
+        expect((await lstat(link)).isSymbolicLink()).toBe(true);
+        expect(stdout()).toContain(`codex: keep ${real.dir} (it is the same file as the per-server skill of claude-code)`);
+        expect(existsSync(join(home, '.mcpkit', 'skill-backups'))).toBe(false);
+      });
+
+      it('keeps the link of the agent that moves, and the real skill of the agent that stays', async () => {
+        const { link, real } = await linkSkill('codex', 'claude-code', 'github', level);
+
+        await run('skills', 'guide', '--agent', 'codex');
+
+        expect(exitSpy).not.toHaveBeenCalled();
+        expect(await readFile(real.path, 'utf-8')).toBe(real.content);
+        expect((await lstat(link)).isSymbolicLink()).toBe(true);
+        expect(stdout()).toContain(`codex: keep ${(await generatedSkill('codex', 'github')).dir} (${level === 'folder' ? 'it is a symlink' : 'its SKILL.md is not a regular file'})`);
+        expect(existsSync(join(home, '.mcpkit', 'skill-backups'))).toBe(false);
+      });
     });
 
     it('only governs global skills: project skills are not looked at', async () => {

@@ -42,7 +42,8 @@ export interface AdoptedRecord {
   backup: string | null;
   /**
    * The servers whose per-server skills were kept because their tools are not in the schema cache yet
-   * (the skill holds the only copy of the tool list): they go once the cache exists. Absent in a record
+   * (the skill holds the only copy of the tool list), or because another agent on per-server skills
+   * reads the same file: they go once the cache exists and nobody shares them. Absent in a record
    * written before this field; read it with `deferredOf`.
    */
   deferred?: string[];

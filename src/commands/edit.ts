@@ -11,6 +11,7 @@ import {
   validateRuntimeIdleTimeout,
 } from '../runtime-config.js';
 import { stopRuntime } from '../runtime-manager.js';
+import { sameFileAs } from '../same-file.js';
 import { removeSkillDirectory } from '../skill-file.js';
 import { ALL_AGENTS } from '../types.js';
 import type { AgentType } from '../types.js';
@@ -128,9 +129,17 @@ Env hints (shown when a referenced env var is missing at call time):
               scope: 'global' as const,
             };
 
+            // The skills of the agents that keep the server: a removed agent's skill that is the same file (a shared skills directory) is theirs too.
+            const kept = await Promise.all(currentAgents.filter(agent => !agentsToRemoveSet.has(agent)).map(async (agent) => (await getGenerator(agent))(ctx)));
+
             for (const agent of matchingAgents) {
               const generate = await getGenerator(agent);
               const skill = generate(ctx);
+              const sharer = await sameFileAs(skill.filePath, kept);
+              if (sharer !== undefined) {
+                console.log(chalk.dim(`${agent}: kept ${skill.filePath}, the same file as the ${sharer.agent} skill`));
+                continue;
+              }
 
               try {
                 await removeSkillDirectory(skill.filePath);

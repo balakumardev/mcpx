@@ -1,5 +1,6 @@
 import chalk from 'chalk';
 import { getGenerator } from './generators/index.js';
+import { sameFileAs } from './same-file.js';
 import { assertServerName } from './server-name.js';
 import { perServerAgents } from './settings.js';
 import { removeSkillDirectory, stageSkillFile } from './skill-file.js';
@@ -67,7 +68,8 @@ async function writeAllOrNone(planned: PlannedSkill[]): Promise<void> {
 
 /**
  * Make the skill files of one server match `nextAgents`: write the skill of each, and remove the
- * skill of every agent in `previousAgents` that is not in `nextAgents`.
+ * skill of every agent in `previousAgents` that is not in `nextAgents`, unless it is the same file as
+ * the skill of an agent in `nextAgents` (a skills directory linked to another agent's).
  *
  * Agents whose skills mode is `guide` (`mcpkit config skills`) get no per-server skill: they are
  * left out of the writes, and they still count as targeted, so a skill that exists for one of them is
@@ -106,11 +108,24 @@ export async function reconcileSkillFiles(options: ReconcileSkillFilesOptions): 
     }
   }
 
+  // The skills of the agents that keep the server, when one is dropped: its skill can be the same file as one of theirs (a shared skills directory).
+  const kept: GeneratedSkill[] = [];
+  if ([...previousSet].some((agent) => !nextSet.has(agent))) {
+    for (const agent of nextSet) kept.push((await getGenerator(agent))(ctx));
+  }
+
   for (const agent of previousSet) {
     if (nextSet.has(agent)) continue;
 
     const generate = await getGenerator(agent);
     const skill = generate(ctx);
+
+    // Removing it would remove the skill of an agent that keeps the server too.
+    const sharer = await sameFileAs(skill.filePath, kept);
+    if (sharer !== undefined) {
+      if (!quiet) console.log(chalk.dim(`${logPrefix}${dryRun ? '[dry-run] ' : ''}- ${agent}: kept ${skill.filePath}, the same file as the ${sharer.agent} skill`));
+      continue;
+    }
 
     if (dryRun) {
       console.log(chalk.yellow(`${logPrefix}[dry-run] remove ${agent}: ${skill.filePath}`));

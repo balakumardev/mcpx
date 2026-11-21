@@ -17,6 +17,7 @@ import {
 } from './meta-skill.js';
 import { saveSchemaCache } from './schema-store.js';
 import { loadSettings, saveSkillMode, withSkillMode } from './settings.js';
+import { linkSkillsDirectory } from './skill-fixtures.js';
 import type { AgentType, ServerEntry, ToolInfo } from './types.js';
 
 const tools: ToolInfo[] = [{ name: 'echo', description: 'Echo a message', inputSchema: { type: 'object' } }];
@@ -256,6 +257,54 @@ describe('the mcpkit-cli guide with a directory', () => {
       expect(written).toEqual([guidePath('.codex')]);
       expect(await readGuide()).toBe(good);
       expect(await readGuide('.codex')).toBe(buildMetaSkillContent({ pkgVersion: '2.0.0' }));
+    });
+  });
+
+  describe('one guide file that two agents read: a skills directory shared through a symlink (~/.codex/skills -> ~/.claude/skills)', () => {
+    const allThree = ['claude-only', 'both', 'codex-only'];
+
+    beforeEach(async () => {
+      await linkSkillsDirectory('codex', 'claude-code');
+      await addServer(entry('claude-only', ['claude-code'], { description: 'Only Claude Code' }));
+      await addServer(entry('both', ['claude-code', 'codex'], { description: 'Both agents' }));
+      await addServer(entry('codex-only', ['codex'], { description: 'Only Codex' }));
+    });
+
+    it('writes the file once, with the servers of both agents, and the guide of each is current', async () => {
+      const written = await writeMetaSkill({ agents: ['claude-code', 'codex'], scope: 'global', pkgVersion: '1.0.0' });
+
+      expect(written).toEqual([guidePath('.claude')]);
+      const guide = await readGuide('.claude');
+      expect(await readGuide('.codex')).toBe(guide);
+      for (const name of allThree) expect(guide).toContain(`- ${name}`);
+      for (const name of allThree) expect(descriptionOf(guide)).toContain(name);
+      expect(await guideIsCurrent('claude-code', { pkgVersion: '1.0.0' })).toBe(true);
+      expect(await guideIsCurrent('codex', { pkgVersion: '1.0.0' })).toBe(true);
+      expect(stdout.join('\n')).toContain(`✓ mcpkit-cli guide (codex): ${guidePath('.codex')} (the same file as the claude-code guide)`);
+    });
+
+    it('writes the servers of both agents whichever one of them it is written for', async () => {
+      for (const agent of ['codex', 'claude-code'] as const) {
+        await rm(guidePath('.claude'), { force: true });
+
+        await writeMetaSkill({ agents: [agent], scope: 'global', quiet: true, pkgVersion: '1.0.0' });
+
+        const guide = await readGuide('.claude');
+        for (const name of allThree) expect(guide, agent).toContain(`- ${name}`);
+      }
+    });
+
+    it('keeps the servers of the agent in guide mode when the agent on per-server skills writes the file', async () => {
+      await saveSkillMode('per-server', 'codex');
+
+      await writeMetaSkill({ agents: ['codex'], scope: 'global', quiet: true, pkgVersion: '1.0.0' });
+
+      const guide = await readGuide('.codex');
+      expect(guide).toContain('- claude-only');
+      expect(guide).toContain('- both');
+      // Codex reads a per-server skill for each of its servers, so its own servers are not added to the list.
+      expect(guide).not.toContain('codex-only');
+      expect(await guideIsCurrent('claude-code', { pkgVersion: '1.0.0' })).toBe(true);
     });
   });
 

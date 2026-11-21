@@ -25,6 +25,7 @@ import type { LoadedSettings, SkillMode } from '../settings.js';
 import {
   backupRootPath,
   backupSkillDirs,
+  perServerSkillOwners,
   planGuideMigration,
   removeGeneratedSkillDirs,
 } from '../skill-mode-migration.js';
@@ -37,27 +38,32 @@ import type { AgentType, ServerEntry } from '../types.js';
 
 const MODE_HELP = `${SKILL_MODES.join(' or ')}`;
 
-/** The agents of each registered server, for the servers whose agent list can be read. */
-async function registeredServers(): Promise<Array<{ entry: ServerEntry; agents: AgentType[] }>> {
+/** The agents of each registered server, for the servers whose agent list can be read, and whether the registry could be read at all. */
+async function registeredServers(): Promise<{ servers: Array<{ entry: ServerEntry; agents: AgentType[] }>; readable: boolean }> {
   let servers: ServerEntry[] = [];
+  let readable = true;
   try {
     servers = await listServers();
   } catch (err) {
+    readable = false;
     console.warn(chalk.yellow(`Could not read the registry (${(err as Error).message.split('\n')[0]}); only agents named with --agent are considered.`));
   }
-  return resolveEntryAgents(servers, await loadAgentSettings());
+  return { servers: resolveEntryAgents(servers, await loadAgentSettings()), readable };
 }
 
 /**
  * How many of the skills the start-up reconcile kept at adoption (the names in the record) are still on
  * disk as skills mcpkit generated: a skill that `config lean on` or the cleanup of an indexed server
- * removed since is not kept any more. A skills directory that cannot be read counts as none (nothing can be said of it).
+ * removed since is not kept any more, and one an agent on per-server skills reads (the same file) is
+ * kept for that, not until indexed. A skills directory that cannot be read counts as none (nothing can be said of it).
  */
-async function keptSkillCount(agent: AgentType, record: AdoptedRecord): Promise<number> {
+async function keptSkillCount(agent: AgentType, record: AdoptedRecord, settings: LoadedSettings): Promise<number> {
   const names = new Set(deferredOf(record));
   if (names.size === 0) return 0;
   try {
-    const generated = new Set((await planGuideMigration(agent)).remove.map((dir) => basename(dir).slice(SKILL_DIR_PREFIX.length)));
+    // Without reading the registry, every agent on per-server skills owns every server: a skill one of them reads lands in `keep`, not `remove`.
+    const owners = perServerSkillOwners(settings, undefined);
+    const generated = new Set((await planGuideMigration(agent, owners)).remove.map((dir) => basename(dir).slice(SKILL_DIR_PREFIX.length)));
     return [...names].filter((name) => generated.has(name)).length;
   } catch {
     return 0;
@@ -69,12 +75,13 @@ async function keptSkillCount(agent: AgentType, record: AdoptedRecord): Promise<
  * undefined for an agent it has not moved. The skills still kept are the ones whose servers are not
  * indexed yet and whose skill is still there; the clause is left out when there are none.
  */
-async function adoptionNote(agent: AgentType, state: McpkitState): Promise<string | undefined> {
+async function adoptionNote(agent: AgentType, state: McpkitState, settings: LoadedSettings): Promise<string | undefined> {
   if (!Object.hasOwn(state.adopted, agent)) return undefined;
   const record = state.adopted[agent];
   const date = /^\d{4}-\d{2}-\d{2}/.test(record.at) ? record.at.slice(0, 10) : neutralize(record.at);
   const moved = `${record.removed} skill${record.removed === 1 ? '' : 's'} moved${record.removed > 0 && record.backup !== null ? ` to ${neutralize(record.backup)}` : ''}`;
-  const kept = await keptSkillCount(agent, record);
+  // The settings say which agents are on per-server skills: what they read is not counted as kept until indexed.
+  const kept = await keptSkillCount(agent, record, settings);
   return `adopted ${date}: ${moved}${kept > 0 ? `; ${kept} kept until indexed` : ''}`;
 }
 
@@ -90,7 +97,7 @@ async function printSettings(settings: LoadedSettings): Promise<void> {
     const resolved = resolveSkillMode(settings, agent);
     const source = resolved.source === 'default' ? 'built-in default' : `${resolved.source} (${resolved.detail})`;
     console.log(`  ${agent.padEnd(12)} ${resolved.mode.padEnd(11)} ${source}`);
-    const adopted = await adoptionNote(agent, remembered);
+    const adopted = await adoptionNote(agent, remembered, settings);
     if (adopted !== undefined) console.log(chalk.dim(`    ${adopted}`));
   }
   console.log();
@@ -189,7 +196,7 @@ async function setSkills(modeArg: string, opts: { agent?: string; dryRun?: boole
     return;
   }
   const after = withSkillMode(before, mode, agent);
-  const servers = await registeredServers();
+  const { servers, readable } = await registeredServers();
   const inUse = agentsInUse(servers);
   const { apply, overridden } = applicableAgents(before, after, mode, agent, inUse);
   const setting = `${agent ? `skills.agents.${agent}` : 'skills.default'} = ${mode} in ${before.path}`;
@@ -206,7 +213,9 @@ async function setSkills(modeArg: string, opts: { agent?: string; dryRun?: boole
   }
 
   if (mode === 'guide') {
-    const plans = await Promise.all(apply.map((target) => planGuideMigration(target)));
+    // An agent that stays on per-server skills keeps them, also where it reads the file of an agent that moves; with no registry, all of them (fails closed).
+    const owners = perServerSkillOwners(after, readable ? servers : undefined);
+    const plans = await Promise.all(apply.map((target) => planGuideMigration(target, owners)));
     if (dryRun) {
       await showGuideDryRun(plans, setting);
       return;
