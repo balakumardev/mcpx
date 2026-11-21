@@ -123,7 +123,6 @@ export async function waitForKeepAliveShutdown(
 ): Promise<void> {
   const signalSource = options.signalSource ?? process;
   const stderr = options.stderr ?? process.stderr;
-  stderr.write('Persistent stdio session active. Press Ctrl+C to stop.\n');
 
   let closing: Promise<void> | undefined;
   const closeOnce = (): Promise<void> => {
@@ -146,6 +145,8 @@ export async function waitForKeepAliveShutdown(
     for (const signal of KEEPALIVE_SIGNALS) {
       signalSource.on(signal, onSignal);
     }
+    // Printed once the handlers are on: a caller may press Ctrl+C as soon as it reads this, and a signal before them ends the process at once.
+    stderr.write('Persistent stdio session active. Press Ctrl+C to stop.\n');
   });
 }
 

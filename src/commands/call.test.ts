@@ -51,4 +51,25 @@ describe('waitForKeepAliveShutdown', () => {
     expect(signalSource.listenerCount('SIGINT')).toBe(0);
     expect(signalSource.listenerCount('SIGTERM')).toBe(0);
   });
+
+  it('listens for the shutdown signals before it prints the line that says Ctrl+C stops the session', async () => {
+    const signalSource = new FakeSignalSource();
+    const listeningWhenPrinted: number[] = [];
+    // A caller may send the signal as soon as it reads the line: the handlers must be on by then.
+    const stderr = {
+      write: vi.fn(() => {
+        listeningWhenPrinted.push(signalSource.listenerCount('SIGINT'), signalSource.listenerCount('SIGTERM'));
+        return true;
+      }),
+    };
+
+    const waitPromise = waitForKeepAliveShutdown(async () => {}, {
+      signalSource: signalSource as unknown as Pick<NodeJS.Process, 'on' | 'off'>,
+      stderr,
+    });
+
+    expect(listeningWhenPrinted).toEqual([1, 1]);
+    signalSource.emit('SIGINT');
+    await waitPromise;
+  });
 });
